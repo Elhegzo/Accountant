@@ -15,63 +15,6 @@ function Tooltip({ text }) {
   );
 }
 
-/**
- * Returns true if the text looks like real tax form data
- * (has dollar amounts and relevant keywords).
- */
-function looksLikeTaxData(text) {
-  if (!text || text.trim().length < 30) return false;
-  const hasDollarAmounts = /\d{3,}[.,]\d{2}/.test(text);
-  const hasKeywords =
-    /(employment|income|revenus|cotisation|imp.t|t4|relev|remuneration|r.mun.ration|revenu|quebec|canada)/i.test(
-      text
-    );
-  return hasDollarAmounts && hasKeywords;
-}
-
-/**
- * Render all pages of a PDF to canvases at the given scale.
- * Returns an array of HTMLCanvasElement.
- */
-async function renderPDFToCanvases(pdf, scale = 3.0) {
-  const canvases = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale });
-    const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-    canvases.push(canvas);
-  }
-  return canvases;
-}
-
-/**
- * Run Tesseract OCR on an array of canvases.
- * Reuses a single worker across all pages for efficiency.
- */
-async function ocrCanvases(canvases) {
-  const Tesseract = await import('tesseract.js');
-  const worker = await Tesseract.createWorker('eng');
-  let text = '';
-  for (const canvas of canvases) {
-    const result = await worker.recognize(canvas);
-    text += result.data.text + '\n';
-  }
-  await worker.terminate();
-  return text;
-}
-
-/**
- * Extract text from a PDF.
- *
- * Strategy:
- *  1. Try pdfjs native text extraction (fast, works for digital PDFs).
- *  2. If the result doesn't look like real tax data (e.g. scanned/reordered
- *     PDFs from Adobe Acrobat), render each page to a high-res canvas and
- *     run Tesseract OCR on the visual output instead.
- */
 async function extractTextFromPDF(file) {
   try {
     const pdfjsLib = await import('pdfjs-dist');
@@ -82,35 +25,13 @@ async function extractTextFromPDF(file) {
 
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-
-    // --- Step 1: native text extraction ---
-    let nativeText = '';
-    const pages = [];
+    let text = '';
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
-      pages.push(page);
       const content = await page.getTextContent();
-      nativeText += content.items.map((item) => item.str).join(' ') + '\n';
+      text += content.items.map((item) => item.str).join(' ') + '\n';
     }
-
-    if (looksLikeTaxData(nativeText)) {
-      return { text: nativeText, confidence: 'high' };
-    }
-
-    // --- Step 2: render to canvas → OCR ---
-    // (Handles scanned PDFs where embedded text order is garbled or missing)
-    const canvases = [];
-    for (const page of pages) {
-      const viewport = page.getViewport({ scale: 3.0 });
-      const canvas = document.createElement('canvas');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-      canvases.push(canvas);
-    }
-
-    const ocrText = await ocrCanvases(canvases);
-    return { text: ocrText, confidence: ocrText.trim().length > 100 ? 'high' : 'low' };
+    return { text, confidence: 'high' };
   } catch (err) {
     console.error('PDF extraction error:', err);
     return { text: '', confidence: 'low', error: err.message };
@@ -143,9 +64,12 @@ async function processFile(file) {
     return { error: 'Unsupported file type. Please upload a PDF, JPEG, or PNG.' };
   }
 
-  const extraction = isPDF
-    ? await extractTextFromPDF(file)
-    : await extractTextFromImage(file);
+  let extraction;
+  if (isPDF) {
+    extraction = await extractTextFromPDF(file);
+  } else {
+    extraction = await extractTextFromImage(file);
+  }
 
   const docType = classifyDocument(extraction.text);
 
@@ -243,7 +167,7 @@ function DocumentCard({ doc, index, onFieldChange, onTypeChange, onRemove }) {
           <div className="min-w-0">
             <p className="text-white text-sm font-medium truncate">{doc.name}</p>
             <p className="text-slate-500 text-xs">
-              {doc.confidence === 'low' ? '⚠️ Low confidence — please verify values' : '✅ Extracted'}
+              {doc.confidence === 'low' ? '⚠️ OCR (low confidence)' : '✅ Extracted'}
             </p>
           </div>
         </div>
@@ -328,9 +252,8 @@ export default function DocumentUpload({ onComplete }) {
     setDocs((prev) => {
       const combined = [...prev];
       for (const newDoc of newDocs) {
-        const existingIdx = combined.findIndex(
-          (d) => d.docType === newDoc.docType && newDoc.docType !== 'UNKNOWN'
-        );
+        // Check for duplicates
+        const existingIdx = combined.findIndex((d) => d.docType === newDoc.docType && newDoc.docType !== 'UNKNOWN');
         if (existingIdx >= 0 && newDoc.docType !== 'UNKNOWN') {
           const replace = window.confirm(
             `We already have a ${DOCUMENT_LABELS[newDoc.docType]}. Replace it?`
@@ -379,11 +302,10 @@ export default function DocumentUpload({ onComplete }) {
           ? {
               ...d,
               docType: newType,
-              fields:
-                newType === 'T4' ? parseT4(d.text)
-                : newType === 'RL1' ? parseRl1(d.text)
-                : newType === 'RL31' ? parseRl31(d.text)
-                : {},
+              fields: newType === 'T4' ? parseT4(d.text)
+                     : newType === 'RL1' ? parseRl1(d.text)
+                     : newType === 'RL31' ? parseRl31(d.text)
+                     : {},
             }
           : d
       )
@@ -453,15 +375,15 @@ export default function DocumentUpload({ onComplete }) {
           {processing ? (
             <div className="flex flex-col items-center gap-3">
               <div className="w-8 h-8 border-4 border-red-500 border-t-transparent rounded-full animate-spin" />
-              <p className="text-slate-300 text-sm">
-                Processing: <span className="text-white">{processingFile}</span>
-              </p>
-              <p className="text-slate-500 text-xs">Analyzing document — this may take a moment…</p>
+              <p className="text-slate-300 text-sm">Processing: <span className="text-white">{processingFile}</span></p>
+              <p className="text-slate-500 text-xs">This may take a moment for OCR processing…</p>
             </div>
           ) : (
             <>
               <div className="text-5xl mb-4">📂</div>
-              <p className="text-white text-lg font-semibold mb-1">Drop your tax slips here</p>
+              <p className="text-white text-lg font-semibold mb-1">
+                Drop your tax slips here
+              </p>
               <p className="text-slate-400 text-sm mb-3">
                 or click to browse &mdash; PDF, JPEG, or PNG
               </p>
@@ -511,9 +433,7 @@ export default function DocumentUpload({ onComplete }) {
         {t4Doc && rl1Doc && t4Doc.fields?.box14 && rl1Doc.fields?.boxA &&
           Math.abs((t4Doc.fields.box14 || 0) - (rl1Doc.fields.boxA || 0)) > 100 && (
           <div className="bg-slate-700/40 border border-slate-600 rounded-xl p-4 mb-4 text-slate-300 text-sm">
-            ℹ️ Your T4 income (${(t4Doc.fields.box14 || 0).toLocaleString('en-CA')}) differs from your
-            Relevé 1 income (${(rl1Doc.fields.boxA || 0).toLocaleString('en-CA')}). Small differences
-            are normal due to taxable benefits.
+            ℹ️ Your T4 income (${(t4Doc.fields.box14 || 0).toLocaleString('en-CA')}) differs from your Relevé 1 income (${(rl1Doc.fields.boxA || 0).toLocaleString('en-CA')}). Small differences are normal due to taxable benefits.
           </div>
         )}
 
