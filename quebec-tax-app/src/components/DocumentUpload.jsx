@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import { classifyDocument, DOCUMENT_LABELS } from '../utils/classifyDocument';
+import { extractPDFSpatial } from '../utils/extractSpatialText';
 import { parseT4, T4_FIELD_LABELS } from '../utils/parseT4';
 import { parseRl1, RL1_FIELD_LABELS } from '../utils/parseRl1';
 import { parseRl31, RL31_FIELD_LABELS } from '../utils/parseRl31';
@@ -17,24 +18,11 @@ function Tooltip({ text }) {
 
 async function extractTextFromPDF(file) {
   try {
-    const pdfjsLib = await import('pdfjs-dist');
-    pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-      'pdfjs-dist/build/pdf.worker.min.mjs',
-      import.meta.url
-    ).toString();
-
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    let text = '';
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      text += content.items.map((item) => item.str).join(' ') + '\n';
-    }
-    return { text, confidence: 'high' };
+    const { rows, flatText } = await extractPDFSpatial(file);
+    return { text: flatText, rows, confidence: 'high' };
   } catch (err) {
     console.error('PDF extraction error:', err);
-    return { text: '', confidence: 'low', error: err.message };
+    return { text: '', rows: [], confidence: 'low', error: err.message };
   }
 }
 
@@ -72,17 +60,19 @@ async function processFile(file) {
   }
 
   const docType = classifyDocument(extraction.text);
+  const rows = extraction.rows || [];
 
   let fields = {};
-  if (docType === 'T4') fields = parseT4(extraction.text);
-  else if (docType === 'RL1') fields = parseRl1(extraction.text);
-  else if (docType === 'RL31') fields = parseRl31(extraction.text);
+  if (docType === 'T4') fields = parseT4(rows);
+  else if (docType === 'RL1') fields = parseRl1(rows);
+  else if (docType === 'RL31') fields = parseRl31(rows);
 
   return {
     name: file.name,
     type: file.type,
     docType,
     text: extraction.text,
+    rows,
     confidence: extraction.confidence,
     fields,
   };
@@ -92,10 +82,24 @@ function FieldEditor({ fieldKey, value, fieldDef, onChange }) {
   const [editing, setEditing] = useState(false);
   const [localVal, setLocalVal] = useState(value ?? '');
 
+  const isNumeric = fieldDef.isNumeric !== false; // default true for backward compat
+
   const commit = () => {
-    const num = parseFloat(String(localVal).replace(/,/g, ''));
-    onChange(fieldKey, isNaN(num) ? localVal : num);
+    if (isNumeric) {
+      const num = parseFloat(String(localVal).replace(/,/g, ''));
+      onChange(fieldKey, isNaN(num) ? localVal : num);
+    } else {
+      onChange(fieldKey, String(localVal).trim());
+    }
     setEditing(false);
+  };
+
+  const hasValue = value !== undefined && value !== null && value !== '';
+
+  const displayValue = () => {
+    if (!hasValue) return 'Enter value';
+    if (isNumeric) return `$${Number(value).toLocaleString('en-CA')}`;
+    return String(value);
   };
 
   return (
@@ -110,27 +114,25 @@ function FieldEditor({ fieldKey, value, fieldDef, onChange }) {
           <div className="flex items-center gap-1">
             <input
               autoFocus
-              type="number"
-              className="w-28 bg-slate-900 border border-blue-500 text-white text-sm px-2 py-1 rounded outline-none"
+              type={isNumeric ? 'number' : 'text'}
+              className="w-36 bg-slate-900 border border-blue-500 text-white text-sm px-2 py-1 rounded outline-none"
               value={localVal}
               onChange={(e) => setLocalVal(e.target.value)}
               onBlur={commit}
               onKeyDown={(e) => e.key === 'Enter' && commit()}
-              placeholder="0"
+              placeholder={isNumeric ? '0.00' : 'Enter value'}
             />
           </div>
         ) : (
           <button
             onClick={() => { setLocalVal(value ?? ''); setEditing(true); }}
             className={`text-sm font-mono px-2 py-0.5 rounded transition-colors ${
-              value === undefined || value === null || value === ''
+              !hasValue
                 ? 'text-yellow-400 bg-yellow-900/20 border border-yellow-700/50'
                 : 'text-green-300 bg-green-900/20 hover:bg-green-900/40'
             }`}
           >
-            {value !== undefined && value !== null && value !== ''
-              ? `$${Number(value).toLocaleString('en-CA')}`
-              : 'Enter value'}
+            {displayValue()}
           </button>
         )}
       </div>
@@ -302,10 +304,10 @@ export default function DocumentUpload({ onComplete }) {
           ? {
               ...d,
               docType: newType,
-              fields: newType === 'T4' ? parseT4(d.text)
-                     : newType === 'RL1' ? parseRl1(d.text)
-                     : newType === 'RL31' ? parseRl31(d.text)
-                     : {},
+              fields: newType === 'T4'   ? parseT4(d.rows || [])
+                    : newType === 'RL1'  ? parseRl1(d.rows || [])
+                    : newType === 'RL31' ? parseRl31(d.rows || [])
+                    : {},
             }
           : d
       )
