@@ -1,10 +1,8 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { classifyDocument, DOCUMENT_LABELS } from '../utils/classifyDocument';
 import { parseT4, T4_FIELD_LABELS } from '../utils/parseT4';
 import { parseRl1, RL1_FIELD_LABELS } from '../utils/parseRl1';
 import { parseRl31, RL31_FIELD_LABELS } from '../utils/parseRl31';
-import { parseDocumentWithClaude } from '../utils/claudeParser';
-import ApiKeyModal, { getStoredApiKey } from './ApiKeyModal';
 
 const ACCEPTED_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
 
@@ -58,7 +56,7 @@ async function extractTextFromImage(file) {
   }
 }
 
-async function processFile(file, apiKey) {
+async function processFile(file) {
   const isPDF = file.type === 'application/pdf';
   const isImage = file.type.startsWith('image/');
 
@@ -66,26 +64,6 @@ async function processFile(file, apiKey) {
     return { error: 'Unsupported file type. Please upload a PDF, JPEG, or PNG.' };
   }
 
-  // --- Claude AI path (preferred) ---
-  if (apiKey) {
-    try {
-      const result = await parseDocumentWithClaude(file, apiKey);
-      return {
-        name: file.name,
-        type: file.type,
-        docType: result.docType,
-        text: '',
-        confidence: result.confidence,
-        fields: result.fields,
-        parsedBy: 'claude',
-      };
-    } catch (err) {
-      console.warn('Claude parsing failed, falling back to regex:', err.message);
-      // Fall through to legacy path
-    }
-  }
-
-  // --- Legacy fallback: pdfjs + tesseract + regex ---
   let extraction;
   if (isPDF) {
     extraction = await extractTextFromPDF(file);
@@ -107,7 +85,6 @@ async function processFile(file, apiKey) {
     text: extraction.text,
     confidence: extraction.confidence,
     fields,
-    parsedBy: 'regex',
   };
 }
 
@@ -190,11 +167,7 @@ function DocumentCard({ doc, index, onFieldChange, onTypeChange, onRemove }) {
           <div className="min-w-0">
             <p className="text-white text-sm font-medium truncate">{doc.name}</p>
             <p className="text-slate-500 text-xs">
-              {doc.parsedBy === 'claude'
-                ? '🤖 Parsed by Claude AI'
-                : doc.confidence === 'low'
-                ? '⚠️ OCR (low confidence)'
-                : '✅ Extracted'}
+              {doc.confidence === 'low' ? '⚠️ OCR (low confidence)' : '✅ Extracted'}
             </p>
           </div>
         </div>
@@ -256,19 +229,7 @@ export default function DocumentUpload({ onComplete }) {
   const [processing, setProcessing] = useState(false);
   const [processingFile, setProcessingFile] = useState('');
   const [dragOver, setDragOver] = useState(false);
-  const [apiKey, setApiKey] = useState('');
-  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const fileInputRef = useRef(null);
-
-  // Load API key from localStorage on mount
-  useEffect(() => {
-    setApiKey(getStoredApiKey());
-  }, []);
-
-  const handleApiKeyClose = (key) => {
-    setApiKey(key);
-    setShowApiKeyModal(false);
-  };
 
   const handleFiles = useCallback(async (files) => {
     setProcessing(true);
@@ -280,7 +241,7 @@ export default function DocumentUpload({ onComplete }) {
         continue;
       }
       setProcessingFile(file.name);
-      const result = await processFile(file, apiKey);
+      const result = await processFile(file);
       if (!result.error) {
         newDocs.push(result);
       } else {
@@ -307,7 +268,7 @@ export default function DocumentUpload({ onComplete }) {
 
     setProcessing(false);
     setProcessingFile('');
-  }, [apiKey]);
+  }, []);
 
   const onDrop = useCallback(
     (e) => {
@@ -375,7 +336,6 @@ export default function DocumentUpload({ onComplete }) {
 
   return (
     <div className="min-h-screen bg-[#0d1b2a] text-white">
-      {showApiKeyModal && <ApiKeyModal onClose={handleApiKeyClose} />}
       <div className="max-w-3xl mx-auto px-4 py-10">
         {/* Header */}
         <div className="mb-8">
@@ -383,33 +343,12 @@ export default function DocumentUpload({ onComplete }) {
             <span className="text-red-500">●</span>
             <span>Step 1 of 4</span>
           </div>
-          <div className="flex items-start justify-between gap-4 mb-2">
-            <h1 className="text-3xl font-bold text-white">Upload Your Tax Slips</h1>
-            <button
-              onClick={() => setShowApiKeyModal(true)}
-              className={`shrink-0 flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                apiKey
-                  ? 'text-green-400 border-green-700/50 bg-green-900/20 hover:bg-green-900/40'
-                  : 'text-yellow-400 border-yellow-700/50 bg-yellow-900/20 hover:bg-yellow-900/40'
-              }`}
-            >
-              {apiKey ? '🤖 AI parsing on' : '⚠️ Enable AI parsing'}
-            </button>
-          </div>
+          <h1 className="text-3xl font-bold text-white mb-2">Upload Your Tax Slips</h1>
           <p className="text-slate-400">
             Upload your <strong className="text-white">T4</strong> (federal) and{' '}
             <strong className="text-white">Relevé 1</strong> (Quebec). Optionally add a{' '}
             <strong className="text-white">Relevé 31</strong> if you rent your home.
           </p>
-          {!apiKey && (
-            <p className="text-yellow-500/80 text-xs mt-2">
-              ⚠️ AI parsing is not configured. Document extraction may be inaccurate for scanned PDFs.{' '}
-              <button onClick={() => setShowApiKeyModal(true)} className="underline hover:text-yellow-400">
-                Set up Claude AI
-              </button>{' '}
-              for reliable parsing.
-            </p>
-          )}
         </div>
 
         {/* Drop Zone */}
@@ -437,9 +376,7 @@ export default function DocumentUpload({ onComplete }) {
             <div className="flex flex-col items-center gap-3">
               <div className="w-8 h-8 border-4 border-red-500 border-t-transparent rounded-full animate-spin" />
               <p className="text-slate-300 text-sm">Processing: <span className="text-white">{processingFile}</span></p>
-              <p className="text-slate-500 text-xs">
-                {apiKey ? '🤖 Sending to Claude AI for analysis…' : 'Running OCR — this may take a moment…'}
-              </p>
+              <p className="text-slate-500 text-xs">This may take a moment for OCR processing…</p>
             </div>
           ) : (
             <>
