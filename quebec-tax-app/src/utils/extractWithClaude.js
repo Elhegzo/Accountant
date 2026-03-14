@@ -1,8 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
 
-/**
- * Maps the documentType string returned by Claude to our internal docType keys.
- */
 const DOCUMENT_TYPE_MAP = {
   'T4':    'T4',
   'RL-1':  'RL1',
@@ -10,77 +7,61 @@ const DOCUMENT_TYPE_MAP = {
 };
 
 /**
- * Explicit prompt that names every box by its number AND its printed description
- * so Claude never confuses a box label (e.g. "14") with a dollar value.
+ * System-level instruction — processed before the document.
+ * Kept short and natural to match the way Claude.ai parses these forms.
  */
-const PROMPT = `You are a Canadian tax document parser. Follow these two steps exactly.
+const SYSTEM = `You are an expert at reading Canadian tax slips (T4, Relevé 1, RL-31).
+When given a document, you identify its type and extract every filled-in box value.
+You return ONLY a JSON object — no prose, no markdown fences.`;
 
-━━━ STEP 1 — Identify the document type ━━━
-• T4    → header reads "Statement of Remuneration Paid / État de la rémunération payée". Issued by CRA/ARC.
-• RL-1  → header reads "Relevé 1". Issued by Revenu Québec. Fields are labeled with letters (A, B, C, E…) plus the number 235.
-• RL-31 → header reads "Relevé 31". About a rental dwelling (logement).
+/**
+ * User-turn instruction appended after the document content.
+ * Lists exact key names to avoid any key-name ambiguity.
+ */
+const USER_INSTRUCTION = `Please extract all filled-in boxes from this tax slip.
 
-━━━ STEP 2 — Extract dollar amounts ━━━
-Read every labeled box. For each box whose amount cell is non-blank and non-zero, record the dollar amount using the key listed below.
+Rules:
+- Box LABELS (numbers like 14, 22, 44) are identifiers, never dollar values.
+- Only include boxes that actually contain a printed amount — skip blanks and zeros.
+- Dollar amounts: plain numbers, no $ or commas (e.g. 41870.06).
+- If the document contains two copies of the same slip (employee copy + CRA copy), read only ONE copy.
 
-⚠️  CRITICAL: The printed box label (e.g. "14", "22", "44") is an identifier, NOT a dollar amount.
-    Never use a box label as a value. Only extract the dollar figure printed inside or next to the box.
-
-T4 field keys — match by the box number AND description printed on the slip:
-  box14  → "14  Employment income / Revenus d'emploi"
-  box16  → "16  Employee's CPP contributions / Cotisations de l'employé au RPC"
-  box17  → "17  Employee's QPP contributions / Cotisations de l'employé au RRQ"
-  box18  → "18  Employee's EI premiums / Cotisations de l'employé à l'AE"
-  box22  → "22  Income tax deducted / Impôt sur le revenu retenu"
-  box44  → "44  Union dues / Cotisations syndicales"
-  box46  → "46  Charitable donations / Dons de bienfaisance"
-  box52  → "52  Pension adjustment / Facteur d'équivalence"
-  box55  → "55  Employee's PPIP premiums / Cotisations de l'employé au RPAP"
-  box40  → "40  Other taxable allowances and benefits / Autres allocations et avantages imposables"
-  box85  → "85  Employee-paid premiums for private health services plans"
-
-RL-1 field keys — match by the box letter AND the French/English label printed beside it:
-  boxA   → "A   Revenus d'emploi / Employment income"
-  boxBA  → "B.A Cotisations au RRQ / QPP contributions"
-  boxBB  → "B.B Cotisations au RRQ – taux supplémentaire / Supplemental QPP"
-  boxC   → "C   Cotisations à l'assurance-emploi / EI premiums"
-  boxE   → "E   Impôt du Québec retenu / Quebec income tax withheld"
-  boxG   → "G   Salaire admissible au RRQ / Admissible salary (QPP)"
-  boxH   → "H   Cotisations au RQAP / QPIP premiums"
-  boxI   → "I   Salaire admissible au RQAP / Admissible salary (QPIP)"
-  boxJ   → "J   Régime privé d'ass. maladie / Private health insurance"
-  box235 → "235"
-
-RL-31 field keys:
-  boxA         → unit / logement identifier (text)
-  boxB         → number of tenants (integer)
-  boxC         → full civic address of the dwelling (text)
-  landlordName → name of the landlord / locateur (text)
-
-Output rules:
-• Skip any box that is blank or zero.
-• Dollar amounts: plain numbers, no $ sign, no commas — e.g. 41870.06 not "$41,870.06".
-• Do NOT invent values. Only report what is visibly printed on the document.
-• Return JSON only — no markdown fences, no explanation.
-
+Return this JSON structure:
 {
   "documentType": "T4" | "RL-1" | "RL-31",
   "fields": { "box14": 41870.06, "box22": 4442.54 }
-}`;
+}
+
+Exact key names to use:
+
+T4 → box14 (Employment income), box16 (CPP), box17 (QPP), box18 (EI premiums),
+     box22 (Income tax deducted), box44 (Union dues), box46 (Charitable donations),
+     box52 (Pension adjustment), box55 (PPIP premiums), box40 (Other taxable benefits),
+     box85 (Employee-paid health premiums)
+
+RL-1 → boxA (Employment income), boxBA (QPP / RRQ contributions),
+       boxBB (Supplemental QPP), boxC (EI premiums),
+       boxE (Quebec income tax withheld), boxG (Admissible salary QPP),
+       boxH (QPIP / RQAP premiums), boxI (Admissible salary QPIP),
+       boxJ (Private health insurance), box235
+
+RL-31 → boxA (unit number, text), boxB (number of tenants, integer),
+        boxC (full address, text), landlordName (text)`;
 
 /**
- * Convert a File to a base64 string.
- * Uses a chunked approach to avoid call-stack overflow on large files.
+ * Use the browser's FileReader to produce a reliable base64 string.
  */
-async function fileToBase64(file) {
-  const arrayBuffer = await file.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
-  const CHUNK = 8192;
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      // result is "data:<mime>;base64,<data>" — strip the prefix
+      const base64 = reader.result.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }
 
 /**
@@ -112,12 +93,16 @@ export async function extractWithClaude(file, apiKey) {
       };
 
   const response = await client.messages.create({
-    model: 'claude-opus-4-6',
+    model: 'claude-sonnet-4-6',
     max_tokens: 1024,
+    system: SYSTEM,
     messages: [
       {
         role: 'user',
-        content: [docBlock, { type: 'text', text: PROMPT }],
+        content: [
+          docBlock,
+          { type: 'text', text: USER_INSTRUCTION },
+        ],
       },
     ],
   });
@@ -125,9 +110,11 @@ export async function extractWithClaude(file, apiKey) {
   const rawText = response.content.find((b) => b.type === 'text')?.text ?? '';
   console.log('[extractWithClaude] raw response:', rawText);
 
-  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+  // Strip any accidental markdown fences before parsing
+  const cleaned = rawText.replace(/```(?:json)?/gi, '').trim();
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
-    throw new Error('API response contained no JSON object.');
+    throw new Error(`No JSON in response. Raw: ${rawText.slice(0, 200)}`);
   }
 
   const data = JSON.parse(jsonMatch[0]);
@@ -137,7 +124,6 @@ export async function extractWithClaude(file, apiKey) {
     throw new Error(`Unrecognised document type: "${data.documentType}"`);
   }
 
-  // Drop nulls / empty strings returned by Claude
   const fields = {};
   for (const [key, val] of Object.entries(data.fields ?? {})) {
     if (val !== null && val !== undefined && val !== '') {
