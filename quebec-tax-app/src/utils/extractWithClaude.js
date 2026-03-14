@@ -75,6 +75,10 @@ async function fileToBase64(file) {
  * @throws  {Error} on API failure, unexpected JSON, or unknown document type
  */
 export async function extractWithClaude(file, apiKey) {
+  if (!apiKey) {
+    throw new Error('ANTHROPIC_API_KEY_MISSING');
+  }
+
   const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
 
   const base64 = await fileToBase64(file);
