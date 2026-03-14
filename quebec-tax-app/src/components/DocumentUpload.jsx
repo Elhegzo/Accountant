@@ -1,24 +1,10 @@
 import { useState, useCallback, useRef } from 'react';
-import { processDocument } from '../utils/documentProcessor';
-import { T4_FIELD_LABELS } from '../utils/parseT4';
-import { RL1_FIELD_LABELS } from '../utils/parseRl1';
-import { RL31_FIELD_LABELS } from '../utils/parseRl31';
-
-const ACCEPTED_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
+import { processDocument, FIELD_DEFS } from '../utils/documentProcessor';
 
 const DOCUMENT_LABELS = { T4: 'T4', RL1: 'Relevé 1', RL31: 'Relevé 31' };
 
-/**
- * Required fields that must always have a visible row so the user can fill
- * them in even when the API didn't extract a value.
- */
-const REQUIRED_FIELDS = {
-  T4:  ['box14'],
-  RL1: ['boxE'],
-};
-
 // ---------------------------------------------------------------------------
-// Helpers
+// Tooltip
 // ---------------------------------------------------------------------------
 
 function Tooltip({ text }) {
@@ -30,63 +16,63 @@ function Tooltip({ text }) {
   );
 }
 
-
 // ---------------------------------------------------------------------------
-// FieldEditor — single editable row
+// FieldRow — one editable row in the Box | Description | Amount table
 // ---------------------------------------------------------------------------
 
-function FieldEditor({ fieldKey, value, fieldDef, onChange }) {
+function FieldRow({ row, onChange }) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState('');
-  const isNumeric = fieldDef.isNumeric !== false;
-  const hasValue = value !== undefined && value !== null && value !== '';
+  const [draft,   setDraft]   = useState('');
+
+  const hasValue = row.value !== undefined && row.value !== null && row.value !== '';
 
   const displayValue = () => {
     if (!hasValue) return 'Enter value';
-    if (isNumeric)
-      return `$${Number(value).toLocaleString('en-CA', { minimumFractionDigits: 2 })}`;
-    return String(value);
+    if (row.isNumeric) {
+      return `$${Number(row.value).toLocaleString('en-CA', { minimumFractionDigits: 2 })}`;
+    }
+    return String(row.value);
   };
 
   const startEditing = () => {
-    setDraft(hasValue ? String(value) : '');
+    setDraft(hasValue ? String(row.value) : '');
     setEditing(true);
   };
 
   const commitEdit = () => {
     setEditing(false);
     if (draft === '') {
-      onChange(fieldKey, undefined);
+      onChange(undefined);
       return;
     }
-    if (isNumeric) {
+    if (row.isNumeric) {
       const num = parseFloat(draft.replace(/[$,\s]/g, ''));
-      if (!isNaN(num)) onChange(fieldKey, num);
+      if (!isNaN(num)) onChange(num);
     } else {
-      onChange(fieldKey, draft);
+      onChange(draft);
     }
   };
 
   return (
-    <div className="flex items-center justify-between py-2 border-b border-slate-700/50 gap-2">
-      <div className="flex items-center text-sm text-slate-300 min-w-0 flex-1">
-        <span className="text-slate-500 text-xs mr-2 shrink-0">Box {fieldDef.box}</span>
-        <span className="truncate">{fieldDef.label}</span>
-        <Tooltip text={fieldDef.description} />
-      </div>
-      <div className="shrink-0">
+    <tr className="border-b border-slate-700/50">
+      <td className="py-2 pr-4 text-slate-400 text-xs font-mono w-12">{row.box}</td>
+      <td className="py-2 pr-4 text-slate-300 text-sm">
+        {row.description}
+        {row.tooltip && <Tooltip text={row.tooltip} />}
+      </td>
+      <td className="py-2 text-right w-40">
         {editing ? (
           <input
             autoFocus
-            type={isNumeric ? 'number' : 'text'}
+            type={row.isNumeric ? 'number' : 'text'}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onBlur={commitEdit}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') commitEdit();
+              if (e.key === 'Enter')  commitEdit();
               if (e.key === 'Escape') setEditing(false);
             }}
-            className="w-36 bg-slate-900 border border-blue-500 text-white text-sm px-2 py-1 rounded outline-none"
+            className="w-full bg-slate-900 border border-blue-500 text-white text-sm px-2 py-1 rounded outline-none"
           />
         ) : (
           <button
@@ -100,8 +86,8 @@ function FieldEditor({ fieldKey, value, fieldDef, onChange }) {
             {displayValue()}
           </button>
         )}
-      </div>
-    </div>
+      </td>
+    </tr>
   );
 }
 
@@ -109,7 +95,7 @@ function FieldEditor({ fieldKey, value, fieldDef, onChange }) {
 // DocumentCard — one card per uploaded file
 // ---------------------------------------------------------------------------
 
-function DocumentCard({ doc, index, onFieldChange, onTypeChange, onRemove }) {
+function DocumentCard({ doc, index, onRowChange, onTypeChange, onRemove }) {
   const typeColors = {
     T4:      'text-blue-400 bg-blue-900/20 border-blue-700/50',
     RL1:     'text-red-400 bg-red-900/20 border-red-700/50',
@@ -117,28 +103,11 @@ function DocumentCard({ doc, index, onFieldChange, onTypeChange, onRemove }) {
     UNKNOWN: 'text-yellow-400 bg-yellow-900/20 border-yellow-700/50',
   };
 
-  const fieldLabels = {
-    T4:      T4_FIELD_LABELS,
-    RL1:     RL1_FIELD_LABELS,
-    RL31:    RL31_FIELD_LABELS,
-    UNKNOWN: {},
-  };
-
-  const labels = fieldLabels[doc.docType] || {};
-  const requiredKeys = REQUIRED_FIELDS[doc.docType] || [];
-
-  /**
-   * Which rows to render:
-   *   • extraction error → show all labels so user can fill everything in manually
-   *   • extraction OK    → only show extracted keys + always-required keys
-   */
-  const visibleEntries = Object.entries(labels).filter(([key]) => {
-    if (doc.extractionError) return true;
-    return key in (doc.fields || {}) || requiredKeys.includes(key);
-  });
+  const hasRows = doc.displayRows?.length > 0;
 
   return (
     <div className="bg-slate-800/60 border border-slate-700 rounded-xl overflow-hidden">
+
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-slate-900/60 border-b border-slate-700">
         <div className="flex items-center gap-3 min-w-0">
@@ -154,7 +123,6 @@ function DocumentCard({ doc, index, onFieldChange, onTypeChange, onRemove }) {
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {/* Classification — always automatic; dropdown only shown on extraction failure */}
           {doc.docType === 'UNKNOWN' ? (
             <select
               value={doc.docType}
@@ -167,9 +135,7 @@ function DocumentCard({ doc, index, onFieldChange, onTypeChange, onRemove }) {
               <option value="RL31">Relevé 31</option>
             </select>
           ) : (
-            <span
-              className={`text-xs font-medium px-2 py-1 rounded border ${typeColors[doc.docType]}`}
-            >
+            <span className={`text-xs font-medium px-2 py-1 rounded border ${typeColors[doc.docType]}`}>
               {doc.docType === 'T4'   && '✅ T4 detected'}
               {doc.docType === 'RL1'  && '✅ Relevé 1 detected'}
               {doc.docType === 'RL31' && '✅ Relevé 31 detected'}
@@ -186,28 +152,38 @@ function DocumentCard({ doc, index, onFieldChange, onTypeChange, onRemove }) {
         </div>
       </div>
 
-      {/* Extraction error banner */}
+      {/* Error banner */}
       {doc.extractionError && (
         <div className="px-4 py-3 bg-red-900/20 border-b border-red-700/50 text-red-300 text-sm">
           ⚠️ {doc.extractionError}
         </div>
       )}
 
-      {/* Field rows */}
+      {/* Fields table */}
       {doc.docType !== 'UNKNOWN' && (
-        <div className="px-4 py-2">
-          {visibleEntries.length === 0 && (
-            <p className="text-slate-400 text-sm py-3">No fields extracted.</p>
+        <div className="px-4 py-3">
+          {!hasRows ? (
+            <p className="text-slate-400 text-sm py-2">No fields extracted.</p>
+          ) : (
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-slate-600">
+                  <th className="pb-2 text-left text-xs text-slate-500 font-medium w-12">Box</th>
+                  <th className="pb-2 text-left text-xs text-slate-500 font-medium">Description</th>
+                  <th className="pb-2 text-right text-xs text-slate-500 font-medium w-40">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {doc.displayRows.map((row, i) => (
+                  <FieldRow
+                    key={row.key || i}
+                    row={row}
+                    onChange={(val) => onRowChange(index, i, val)}
+                  />
+                ))}
+              </tbody>
+            </table>
           )}
-          {visibleEntries.map(([key, def]) => (
-            <FieldEditor
-              key={key}
-              fieldKey={key}
-              value={doc.fields?.[key]}
-              fieldDef={def}
-              onChange={(k, v) => onFieldChange(index, k, v)}
-            />
-          ))}
         </div>
       )}
     </div>
@@ -219,10 +195,10 @@ function DocumentCard({ doc, index, onFieldChange, onTypeChange, onRemove }) {
 // ---------------------------------------------------------------------------
 
 export default function DocumentUpload({ onComplete }) {
-  const [docs, setDocs] = useState([]);
-  const [processing, setProcessing] = useState(false);
+  const [docs,           setDocs]           = useState([]);
+  const [processing,     setProcessing]     = useState(false);
   const [processingFile, setProcessingFile] = useState('');
-  const [dragOver, setDragOver] = useState(false);
+  const [dragOver,       setDragOver]       = useState(false);
   const fileInputRef = useRef(null);
 
   // API key: env var (build-time) → sessionStorage fallback (cleared on tab close)
@@ -237,10 +213,8 @@ export default function DocumentUpload({ onComplete }) {
       const newDocs = [];
 
       for (const file of files) {
-        if (!ACCEPTED_TYPES.includes(file.type)) {
-          alert(
-            `"${file.name}" is not a supported format. Please upload PDF, JPEG, or PNG files.`
-          );
+        if (file.type !== 'application/pdf' && !file.type.startsWith('image/')) {
+          alert(`"${file.name}" is not supported. Please upload a PDF or image file.`);
           continue;
         }
         setProcessingFile(file.name);
@@ -276,47 +250,53 @@ export default function DocumentUpload({ onComplete }) {
     [apiKey]
   );
 
-  const onDrop = useCallback(
-    (e) => {
-      e.preventDefault();
-      setDragOver(false);
-      handleFiles(Array.from(e.dataTransfer.files));
-    },
-    [handleFiles]
-  );
-
-  const onDragOver = (e) => {
-    e.preventDefault();
-    setDragOver(true);
-  };
-  const onDragLeave = () => setDragOver(false);
-
-  const onFileInput = (e) => {
-    handleFiles(Array.from(e.target.files));
-    e.target.value = '';
+  // Update a single row's value and keep the fields object in sync.
+  const onRowChange = (docIdx, rowIdx, newValue) => {
+    setDocs((prev) =>
+      prev.map((d, i) => {
+        if (i !== docIdx) return d;
+        const updatedRows   = d.displayRows.map((row, ri) =>
+          ri === rowIdx ? { ...row, value: newValue } : row
+        );
+        const updatedFields = { ...d.fields, [d.displayRows[rowIdx].key]: newValue };
+        return { ...d, displayRows: updatedRows, fields: updatedFields };
+      })
+    );
   };
 
-  const onFieldChange = (docIdx, key, value) => {
+  // When the user manually picks a doc type on the error fallback, populate
+  // the table with empty rows from the field definitions for that type.
+  const onTypeChange = (docIdx, newType) => {
+    const defs      = FIELD_DEFS[newType] || {};
+    const emptyRows = Object.entries(defs).map(([key, def]) => ({
+      key,
+      box:         def.box,
+      description: def.label,
+      value:       undefined,
+      tooltip:     def.description,
+      isNumeric:   def.isNumeric !== false,
+    }));
     setDocs((prev) =>
       prev.map((d, i) =>
-        i === docIdx ? { ...d, fields: { ...d.fields, [key]: value } } : d
+        i === docIdx
+          ? { ...d, docType: newType, displayRows: emptyRows, fields: {} }
+          : d
       )
     );
   };
 
-  // Type can be corrected manually when extraction fails (docType === 'UNKNOWN')
-  const onTypeChange = (docIdx, newType) => {
-    setDocs((prev) =>
-      prev.map((d, i) => (i === docIdx ? { ...d, docType: newType } : d))
-    );
-  };
+  const onRemove = (docIdx) => setDocs((prev) => prev.filter((_, i) => i !== docIdx));
 
-  const onRemove = (docIdx) => {
-    setDocs((prev) => prev.filter((_, i) => i !== docIdx));
-  };
+  const onDrop = useCallback(
+    (e) => { e.preventDefault(); setDragOver(false); handleFiles(Array.from(e.dataTransfer.files)); },
+    [handleFiles]
+  );
+  const onDragOver  = (e) => { e.preventDefault(); setDragOver(true); };
+  const onDragLeave = () => setDragOver(false);
+  const onFileInput = (e) => { handleFiles(Array.from(e.target.files)); e.target.value = ''; };
 
-  const t4Doc  = docs.find((d) => d.docType === 'T4');
-  const rl1Doc = docs.find((d) => d.docType === 'RL1');
+  const t4Doc   = docs.find((d) => d.docType === 'T4');
+  const rl1Doc  = docs.find((d) => d.docType === 'RL1');
   const rl31Doc = docs.find((d) => d.docType === 'RL31');
 
   const canContinue  = t4Doc && rl1Doc;
@@ -326,9 +306,9 @@ export default function DocumentUpload({ onComplete }) {
   const handleContinue = () => {
     if (!canContinue) return;
     onComplete({
-      t4:     t4Doc?.fields  || {},
-      rl1:    rl1Doc?.fields || {},
-      rl31:   rl31Doc?.fields || null,
+      t4:      t4Doc?.fields   || {},
+      rl1:     rl1Doc?.fields  || {},
+      rl31:    rl31Doc?.fields || null,
       hasRl31: !!rl31Doc,
     });
   };
@@ -336,6 +316,7 @@ export default function DocumentUpload({ onComplete }) {
   return (
     <div className="min-h-screen bg-[#0d1b2a] text-white">
       <div className="max-w-3xl mx-auto px-4 py-10">
+
         {/* Header */}
         <div className="mb-8">
           <div className="flex items-center gap-2 text-slate-400 text-sm mb-3">
@@ -366,7 +347,7 @@ export default function DocumentUpload({ onComplete }) {
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".pdf,.jpg,.jpeg,.png"
+            accept=".pdf,image/*"
             onChange={onFileInput}
             className="hidden"
           />
@@ -382,11 +363,9 @@ export default function DocumentUpload({ onComplete }) {
           ) : (
             <>
               <div className="text-5xl mb-4">📂</div>
-              <p className="text-white text-lg font-semibold mb-1">
-                Drop your tax slips here
-              </p>
+              <p className="text-white text-lg font-semibold mb-1">Drop your tax slips here</p>
               <p className="text-slate-400 text-sm mb-3">
-                or click to browse &mdash; PDF, JPEG, or PNG
+                or click to browse — PDF, JPEG, or PNG
               </p>
               <div className="flex flex-wrap gap-2 justify-center text-xs text-slate-500">
                 <span className="bg-slate-700 px-2 py-0.5 rounded">T4</span>
@@ -405,7 +384,7 @@ export default function DocumentUpload({ onComplete }) {
                 key={i}
                 doc={doc}
                 index={i}
-                onFieldChange={onFieldChange}
+                onRowChange={onRowChange}
                 onTypeChange={onTypeChange}
                 onRemove={onRemove}
               />
@@ -436,13 +415,13 @@ export default function DocumentUpload({ onComplete }) {
         {/* Income discrepancy notice */}
         {t4Doc && rl1Doc && t4Doc.fields?.box14 && rl1Doc.fields?.boxA &&
           Math.abs((t4Doc.fields.box14 || 0) - (rl1Doc.fields.boxA || 0)) > 100 && (
-            <div className="bg-slate-700/40 border border-slate-600 rounded-xl p-4 mb-4 text-slate-300 text-sm">
-              ℹ️ Your T4 income ($
-              {(t4Doc.fields.box14 || 0).toLocaleString('en-CA')}) differs from your Relevé 1
-              income (${(rl1Doc.fields.boxA || 0).toLocaleString('en-CA')}). Small differences
-              are normal due to taxable benefits.
-            </div>
-          )}
+          <div className="bg-slate-700/40 border border-slate-600 rounded-xl p-4 mb-4 text-slate-300 text-sm">
+            ℹ️ Your T4 income ($
+            {(t4Doc.fields.box14 || 0).toLocaleString('en-CA')}) differs from your Relevé 1
+            income (${(rl1Doc.fields.boxA || 0).toLocaleString('en-CA')}). Small differences
+            are normal due to taxable benefits.
+          </div>
+        )}
 
         {/* Continue CTA */}
         <div className="flex justify-end">
@@ -458,6 +437,7 @@ export default function DocumentUpload({ onComplete }) {
             Looks good, continue →
           </button>
         </div>
+
       </div>
     </div>
   );
