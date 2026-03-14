@@ -10,45 +10,63 @@ const DOCUMENT_TYPE_MAP = {
 };
 
 /**
- * System prompt sent alongside every document.
- *
- * We include the exact field key names so Claude returns values that map
- * directly to T4_FIELD_LABELS / RL1_FIELD_LABELS / RL31_FIELD_LABELS
- * without any post-processing normalisation.
+ * Explicit prompt that names every box by its number AND its printed description
+ * so Claude never confuses a box label (e.g. "14") with a dollar value.
  */
-const PROMPT = `You are a Canadian tax document parser. Analyze this document and do two things:
+const PROMPT = `You are a Canadian tax document parser. Follow these two steps exactly.
 
-1. Identify the document type — it will be one of: T4, RL-1, or RL-31. Use the document content to determine this automatically. Never ask the user to identify it.
+━━━ STEP 1 — Identify the document type ━━━
+• T4    → header reads "Statement of Remuneration Paid / État de la rémunération payée". Issued by CRA/ARC.
+• RL-1  → header reads "Relevé 1". Issued by Revenu Québec. Fields are labeled with letters (A, B, C, E…) plus the number 235.
+• RL-31 → header reads "Relevé 31". About a rental dwelling (logement).
 
-2. Extract ONLY the boxes/fields that contain actual values. Skip any field that is empty or blank.
+━━━ STEP 2 — Extract dollar amounts ━━━
+Read every labeled box. For each box whose amount cell is non-blank and non-zero, record the dollar amount using the key listed below.
 
-Return JSON only, no explanation. Format:
+⚠️  CRITICAL: The printed box label (e.g. "14", "22", "44") is an identifier, NOT a dollar amount.
+    Never use a box label as a value. Only extract the dollar figure printed inside or next to the box.
+
+T4 field keys — match by the box number AND description printed on the slip:
+  box14  → "14  Employment income / Revenus d'emploi"
+  box16  → "16  Employee's CPP contributions / Cotisations de l'employé au RPC"
+  box17  → "17  Employee's QPP contributions / Cotisations de l'employé au RRQ"
+  box18  → "18  Employee's EI premiums / Cotisations de l'employé à l'AE"
+  box22  → "22  Income tax deducted / Impôt sur le revenu retenu"
+  box44  → "44  Union dues / Cotisations syndicales"
+  box46  → "46  Charitable donations / Dons de bienfaisance"
+  box52  → "52  Pension adjustment / Facteur d'équivalence"
+  box55  → "55  Employee's PPIP premiums / Cotisations de l'employé au RPAP"
+  box40  → "40  Other taxable allowances and benefits / Autres allocations et avantages imposables"
+  box85  → "85  Employee-paid premiums for private health services plans"
+
+RL-1 field keys — match by the box letter AND the French/English label printed beside it:
+  boxA   → "A   Revenus d'emploi / Employment income"
+  boxBA  → "B.A Cotisations au RRQ / QPP contributions"
+  boxBB  → "B.B Cotisations au RRQ – taux supplémentaire / Supplemental QPP"
+  boxC   → "C   Cotisations à l'assurance-emploi / EI premiums"
+  boxE   → "E   Impôt du Québec retenu / Quebec income tax withheld"
+  boxG   → "G   Salaire admissible au RRQ / Admissible salary (QPP)"
+  boxH   → "H   Cotisations au RQAP / QPIP premiums"
+  boxI   → "I   Salaire admissible au RQAP / Admissible salary (QPIP)"
+  boxJ   → "J   Régime privé d'ass. maladie / Private health insurance"
+  box235 → "235"
+
+RL-31 field keys:
+  boxA         → unit / logement identifier (text)
+  boxB         → number of tenants (integer)
+  boxC         → full civic address of the dwelling (text)
+  landlordName → name of the landlord / locateur (text)
+
+Output rules:
+• Skip any box that is blank or zero.
+• Dollar amounts: plain numbers, no $ sign, no commas — e.g. 41870.06 not "$41,870.06".
+• Do NOT invent values. Only report what is visibly printed on the document.
+• Return JSON only — no markdown fences, no explanation.
+
 {
   "documentType": "T4" | "RL-1" | "RL-31",
-  "fields": {
-    "box14": 41870.06,
-    "box22": 4442.54,
-    ... only filled fields
-  }
-}
-
-Use these exact field keys for each document type:
-
-T4 keys: box14 (Employment Income), box16 (CPP Contributions), box17 (QPP Contributions),
-  box18 (EI Premiums), box22 (Federal Income Tax Deducted), box44 (Union Dues),
-  box46 (Charitable Donations), box52 (Pension Adjustment), box55 (PPIP Premiums),
-  box40 (Other Taxable Benefits), box85 (Employee-Paid Health Premiums)
-
-RL-1 keys: boxA (Employment Income), boxBA (QPP Contributions), boxBB (Supplemental QPP),
-  boxC (EI Premiums), boxE (Quebec Income Tax Withheld), boxG (Admissible Salary QPP),
-  boxH (QPIP Premiums), boxI (Admissible Salary QPIP), boxJ (Private Health Insurance),
-  box235 (Supplemental Private Health Insurance)
-
-RL-31 keys: boxA (Unit/Logement Number — string), boxB (Number of Tenants — integer),
-  boxC (Address of Dwelling — string), landlordName (Landlord Name — string)
-
-Numeric values must be plain numbers without $ signs or commas (e.g. 41870.06 not "$41,870.06").
-Only include a key when the corresponding field has a value in the document.`;
+  "fields": { "box14": 41870.06, "box22": 4442.54 }
+}`;
 
 /**
  * Convert a File to a base64 string.
@@ -57,7 +75,6 @@ Only include a key when the corresponding field has a value in the document.`;
 async function fileToBase64(file) {
   const arrayBuffer = await file.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
-  // Process in 8 KB chunks to stay well within call-stack limits
   const CHUNK = 8192;
   let binary = '';
   for (let i = 0; i < bytes.length; i += CHUNK) {
@@ -84,7 +101,6 @@ export async function extractWithClaude(file, apiKey) {
   const base64 = await fileToBase64(file);
   const isPDF = file.type === 'application/pdf';
 
-  // Build the multimodal content block
   const docBlock = isPDF
     ? {
         type: 'document',
@@ -106,10 +122,9 @@ export async function extractWithClaude(file, apiKey) {
     ],
   });
 
-  // Extract the text block from the response
   const rawText = response.content.find((b) => b.type === 'text')?.text ?? '';
+  console.log('[extractWithClaude] raw response:', rawText);
 
-  // Pull the JSON object out (handles any surrounding explanation Claude adds)
   const jsonMatch = rawText.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
     throw new Error('API response contained no JSON object.');
