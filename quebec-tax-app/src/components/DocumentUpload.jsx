@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import { extractWithClaude } from '../utils/extractWithClaude';
+import { processDocument } from '../utils/documentProcessor';
 import { T4_FIELD_LABELS } from '../utils/parseT4';
 import { RL1_FIELD_LABELS } from '../utils/parseRl1';
 import { RL31_FIELD_LABELS } from '../utils/parseRl31';
@@ -30,46 +30,6 @@ function Tooltip({ text }) {
   );
 }
 
-/**
- * Call Claude to extract fields from a single file.
- * Returns a document object; on API failure returns one with extractionError set.
- */
-async function processFile(file, apiKey) {
-  const isPDF = file.type === 'application/pdf';
-  const isImage = file.type.startsWith('image/');
-
-  if (!isPDF && !isImage) {
-    return { error: 'Unsupported file type. Please upload a PDF, JPEG, or PNG.' };
-  }
-
-  try {
-    const { docType, fields } = await extractWithClaude(file, apiKey);
-    return {
-      name: file.name,
-      type: file.type,
-      docType,
-      fields,
-      extractionError: null,
-    };
-  } catch (err) {
-    console.error('Claude extraction error:', err);
-    const isKeyMissing = err.message === 'ANTHROPIC_API_KEY_MISSING';
-    const isAuthError  = err.status === 401 || err.status === 403 ||
-                         (err.message || '').toLowerCase().includes('auth');
-    const extractionError = isKeyMissing
-      ? 'Anthropic API key not configured. Set VITE_ANTHROPIC_API_KEY in your .env file and restart the dev server.'
-      : isAuthError
-      ? 'API key rejected (401/403). Double-check the key in your .env file and restart the dev server.'
-      : `Extraction failed: ${err.message || 'unknown error'}. Please enter your values manually.`;
-    return {
-      name: file.name,
-      type: file.type,
-      docType: 'UNKNOWN',
-      fields: {},
-      extractionError,
-    };
-  }
-}
 
 // ---------------------------------------------------------------------------
 // FieldEditor — single editable row
@@ -265,10 +225,10 @@ export default function DocumentUpload({ onComplete }) {
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef(null);
 
-  // API key: env var (silent) → localStorage fallback
+  // API key: env var (build-time) → sessionStorage fallback (cleared on tab close)
   const apiKey =
     import.meta.env.VITE_ANTHROPIC_API_KEY ||
-    localStorage.getItem('anthropicApiKey') ||
+    sessionStorage.getItem('anthropicApiKey') ||
     '';
 
   const handleFiles = useCallback(
@@ -284,7 +244,7 @@ export default function DocumentUpload({ onComplete }) {
           continue;
         }
         setProcessingFile(file.name);
-        const result = await processFile(file, apiKey);
+        const result = await processDocument(file, apiKey);
         if (!result.error) {
           newDocs.push(result);
         } else {

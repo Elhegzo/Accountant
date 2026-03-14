@@ -6,6 +6,9 @@ import * as pdfjsLib from 'pdfjs-dist';
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.mjs`;
 
+// Abort the API call if it hasn't returned within this window.
+const EXTRACTION_TIMEOUT_MS = 30_000;
+
 // ---------------------------------------------------------------------------
 // Prompt constants
 // ---------------------------------------------------------------------------
@@ -124,6 +127,43 @@ function imageToBase64(file) {
 }
 
 // ---------------------------------------------------------------------------
+// Response parsing — exported for unit testing
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse the raw text returned by Claude into { docType, fields }.
+ * Exported so tests can exercise this logic without making real API calls.
+ *
+ * @param {string} rawText
+ * @returns {{ docType: 'T4'|'RL1'|'RL31', fields: Object }}
+ * @throws {Error} on malformed JSON or unrecognised document type
+ */
+export function parseClaudeResponse(rawText) {
+  const cleaned   = rawText.replace(/```(?:json)?/gi, '').trim();
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error(`No JSON in response. Raw: ${rawText.slice(0, 200)}`);
+  }
+
+  const data = JSON.parse(jsonMatch[0]);
+
+  const docType = DOCUMENT_TYPE_MAP[data.documentType];
+  if (!docType) {
+    throw new Error(`Unrecognised document type: "${data.documentType}"`);
+  }
+
+  // Filter out null / undefined / empty-string values
+  const fields = {};
+  for (const [key, val] of Object.entries(data.fields ?? {})) {
+    if (val !== null && val !== undefined && val !== '') {
+      fields[key] = val;
+    }
+  }
+
+  return { docType, fields };
+}
+
+// ---------------------------------------------------------------------------
 // Main extraction function
 // ---------------------------------------------------------------------------
 
@@ -132,11 +172,12 @@ function imageToBase64(file) {
  *
  * PDFs are rendered to images before sending so Claude sees the visual layout
  * (matching claude.ai behaviour) rather than a text-extracted stream.
+ * The call is aborted automatically after EXTRACTION_TIMEOUT_MS.
  *
  * @param {File}   file    PDF or image uploaded by the user
  * @param {string} apiKey  Anthropic API key
  * @returns {Promise<{ docType: 'T4'|'RL1'|'RL31', fields: Object }>}
- * @throws {Error} on API failure, malformed JSON, or unrecognised document type
+ * @throws {Error} on API failure, timeout, malformed JSON, or unrecognised type
  */
 export async function extractWithClaude(file, apiKey) {
   if (!apiKey) {
@@ -161,40 +202,21 @@ export async function extractWithClaude(file, apiKey) {
     }];
   }
 
-  const response = await client.messages.create({
-    model:      'claude-sonnet-4-6',
-    max_tokens: 1024,
-    system:     SYSTEM,
-    messages: [{
-      role:    'user',
-      content: [...imageBlocks, { type: 'text', text: USER_INSTRUCTION }],
-    }],
-  });
+  const response = await client.messages.create(
+    {
+      model:      'claude-sonnet-4-6',
+      max_tokens: 1024,
+      system:     SYSTEM,
+      messages: [{
+        role:    'user',
+        content: [...imageBlocks, { type: 'text', text: USER_INSTRUCTION }],
+      }],
+    },
+    { signal: AbortSignal.timeout(EXTRACTION_TIMEOUT_MS) },
+  );
 
   const rawText = response.content.find((b) => b.type === 'text')?.text ?? '';
   console.log('[extractWithClaude] raw response:', rawText);
 
-  // Strip any accidental markdown fences before parsing
-  const cleaned   = rawText.replace(/```(?:json)?/gi, '').trim();
-  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error(`No JSON in response. Raw: ${rawText.slice(0, 200)}`);
-  }
-
-  const data = JSON.parse(jsonMatch[0]);
-
-  const docType = DOCUMENT_TYPE_MAP[data.documentType];
-  if (!docType) {
-    throw new Error(`Unrecognised document type: "${data.documentType}"`);
-  }
-
-  // Filter out empty / null values
-  const fields = {};
-  for (const [key, val] of Object.entries(data.fields ?? {})) {
-    if (val !== null && val !== undefined && val !== '') {
-      fields[key] = val;
-    }
-  }
-
-  return { docType, fields };
+  return parseClaudeResponse(rawText);
 }
