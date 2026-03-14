@@ -16,11 +16,29 @@ You return ONLY a JSON object — no prose, no markdown fences.`;
 
 const USER_INSTRUCTION = `Please extract all filled-in boxes from this tax slip.
 
-Rules:
-- Box LABELS (numbers like 14, 22, 44) are identifiers, never dollar values.
-- Only include boxes that actually contain a printed amount — skip blanks and zeros.
-- Dollar amounts: plain numbers, no $ or commas (e.g. 41870.06).
-- If the document contains two copies of the same slip (employee copy + CRA copy), read only ONE copy.
+Step 1 — identify layout:
+  Look at the full image. If the same form appears twice (e.g. "employee copy" on top and
+  "employer/CRA copy" below), read ONLY the topmost copy and ignore the second copy entirely.
+
+Step 2 — extract values:
+  For each box label (number) that you can see, record the dollar amount printed in THAT
+  box's own cell. Never carry a value from one box into an adjacent box's cell.
+  - Box labels are identifiers, never dollar amounts.
+  - Skip boxes that are blank or zero.
+  - Dollar amounts: plain numbers only — no $ sign, no commas (e.g. 41870.06).
+
+Step 3 — verify before responding (T4 only):
+  Use these expected ranges to catch mis-reads before returning your answer:
+  • Box 14 Employment income — your total annual salary; the LARGEST amount on the slip,
+    typically $20,000–$200,000. If any other box appears to have a larger value, re-examine.
+  • Box 16 CPP / Box 17 QPP — each roughly 4–6% of box 14 (usually $1,500–$4,000).
+  • Box 18 EI premiums — roughly 1–2% of box 14 (usually $300–$1,100).
+  • Box 22 Income tax — second-largest; roughly 10–30% of box 14.
+  • Box 44 Union dues — small annual fee, typically $0–$2,000; FAR less than box 14.
+  • Box 52 Pension adjustment — small or zero; NEVER equals box 14 or box 44.
+  • Boxes 46, 55, 40, 85 — all small; each well under $5,000.
+  If box 44 or box 52 contains the same large value as box 14, you have misread the layout —
+  look again more carefully before responding.
 
 Return this JSON structure:
 {
