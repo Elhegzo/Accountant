@@ -53,13 +53,20 @@ async function processFile(file, apiKey) {
     };
   } catch (err) {
     console.error('Claude extraction error:', err);
+    const isKeyMissing = err.message === 'ANTHROPIC_API_KEY_MISSING';
+    const isAuthError  = err.status === 401 || err.status === 403 ||
+                         (err.message || '').toLowerCase().includes('auth');
+    const extractionError = isKeyMissing
+      ? 'Anthropic API key not configured. Set VITE_ANTHROPIC_API_KEY in your .env file and restart the dev server.'
+      : isAuthError
+      ? 'API key rejected (401/403). Double-check the key in your .env file and restart the dev server.'
+      : `Extraction failed: ${err.message || 'unknown error'}. Please enter your values manually.`;
     return {
       name: file.name,
       type: file.type,
       docType: 'UNKNOWN',
       fields: {},
-      extractionError:
-        "We couldn't read this document automatically. Please enter your values manually.",
+      extractionError,
     };
   }
 }
