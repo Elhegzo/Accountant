@@ -1,11 +1,25 @@
 import { useState, useCallback, useRef } from 'react';
-import { classifyDocument, DOCUMENT_LABELS } from '../utils/classifyDocument';
-import { extractPDFSpatial } from '../utils/extractSpatialText';
-import { parseT4, T4_FIELD_LABELS } from '../utils/parseT4';
-import { parseRl1, RL1_FIELD_LABELS } from '../utils/parseRl1';
-import { parseRl31, RL31_FIELD_LABELS } from '../utils/parseRl31';
+import { extractWithClaude } from '../utils/extractWithClaude';
+import { T4_FIELD_LABELS } from '../utils/parseT4';
+import { RL1_FIELD_LABELS } from '../utils/parseRl1';
+import { RL31_FIELD_LABELS } from '../utils/parseRl31';
 
 const ACCEPTED_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
+
+const DOCUMENT_LABELS = { T4: 'T4', RL1: 'Relevé 1', RL31: 'Relevé 31' };
+
+/**
+ * Required fields that must always have a visible row so the user can fill
+ * them in even when the API didn't extract a value.
+ */
+const REQUIRED_FIELDS = {
+  T4:  ['box14'],
+  RL1: ['boxE'],
+};
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function Tooltip({ text }) {
   return (
@@ -16,35 +30,11 @@ function Tooltip({ text }) {
   );
 }
 
-async function extractTextFromPDF(file) {
-  try {
-    const { rows, flatText } = await extractPDFSpatial(file);
-    return { text: flatText, rows, confidence: 'high' };
-  } catch (err) {
-    console.error('PDF extraction error:', err);
-    return { text: '', rows: [], confidence: 'low', error: err.message };
-  }
-}
-
-async function extractTextFromImage(file) {
-  try {
-    const Tesseract = await import('tesseract.js');
-    const worker = await Tesseract.createWorker('eng');
-    const url = URL.createObjectURL(file);
-    const result = await worker.recognize(url);
-    await worker.terminate();
-    URL.revokeObjectURL(url);
-    return {
-      text: result.data.text,
-      confidence: result.data.confidence > 70 ? 'high' : 'low',
-    };
-  } catch (err) {
-    console.error('OCR error:', err);
-    return { text: '', confidence: 'low', error: err.message };
-  }
-}
-
-async function processFile(file) {
+/**
+ * Call Claude to extract fields from a single file.
+ * Returns a document object; on API failure returns one with extractionError set.
+ */
+async function processFile(file, apiKey) {
   const isPDF = file.type === 'application/pdf';
   const isImage = file.type.startsWith('image/');
 
@@ -52,54 +42,62 @@ async function processFile(file) {
     return { error: 'Unsupported file type. Please upload a PDF, JPEG, or PNG.' };
   }
 
-  let extraction;
-  if (isPDF) {
-    extraction = await extractTextFromPDF(file);
-  } else {
-    extraction = await extractTextFromImage(file);
+  try {
+    const { docType, fields } = await extractWithClaude(file, apiKey);
+    return {
+      name: file.name,
+      type: file.type,
+      docType,
+      fields,
+      extractionError: null,
+    };
+  } catch (err) {
+    console.error('Claude extraction error:', err);
+    return {
+      name: file.name,
+      type: file.type,
+      docType: 'UNKNOWN',
+      fields: {},
+      extractionError:
+        "We couldn't read this document automatically. Please enter your values manually.",
+    };
   }
-
-  const docType = classifyDocument(extraction.text);
-  const rows = extraction.rows || [];
-
-  let fields = {};
-  if (docType === 'T4') fields = parseT4(rows);
-  else if (docType === 'RL1') fields = parseRl1(rows);
-  else if (docType === 'RL31') fields = parseRl31(rows);
-
-  return {
-    name: file.name,
-    type: file.type,
-    docType,
-    text: extraction.text,
-    rows,
-    confidence: extraction.confidence,
-    fields,
-  };
 }
+
+// ---------------------------------------------------------------------------
+// FieldEditor — single editable row
+// ---------------------------------------------------------------------------
 
 function FieldEditor({ fieldKey, value, fieldDef, onChange }) {
   const [editing, setEditing] = useState(false);
-  const [localVal, setLocalVal] = useState(value ?? '');
-
-  const isNumeric = fieldDef.isNumeric !== false; // default true for backward compat
-
-  const commit = () => {
-    if (isNumeric) {
-      const num = parseFloat(String(localVal).replace(/,/g, ''));
-      onChange(fieldKey, isNaN(num) ? localVal : num);
-    } else {
-      onChange(fieldKey, String(localVal).trim());
-    }
-    setEditing(false);
-  };
-
+  const [draft, setDraft] = useState('');
+  const isNumeric = fieldDef.isNumeric !== false;
   const hasValue = value !== undefined && value !== null && value !== '';
 
   const displayValue = () => {
     if (!hasValue) return 'Enter value';
-    if (isNumeric) return `$${Number(value).toLocaleString('en-CA')}`;
+    if (isNumeric)
+      return `$${Number(value).toLocaleString('en-CA', { minimumFractionDigits: 2 })}`;
     return String(value);
+  };
+
+  const startEditing = () => {
+    setDraft(hasValue ? String(value) : '');
+    setEditing(true);
+  };
+
+  const commitEdit = () => {
+    setEditing(false);
+    if (draft === '') {
+      onChange(fieldKey, undefined);
+      return;
+    }
+    if (isNumeric) {
+      const num = parseFloat(draft.replace(/[$,\s]/g, ''));
+      if (!isNaN(num)) onChange(fieldKey, num);
+    } else {
+      onChange(fieldKey, draft);
+    }
   };
 
   return (
@@ -111,24 +109,24 @@ function FieldEditor({ fieldKey, value, fieldDef, onChange }) {
       </div>
       <div className="shrink-0">
         {editing ? (
-          <div className="flex items-center gap-1">
-            <input
-              autoFocus
-              type={isNumeric ? 'number' : 'text'}
-              className="w-36 bg-slate-900 border border-blue-500 text-white text-sm px-2 py-1 rounded outline-none"
-              value={localVal}
-              onChange={(e) => setLocalVal(e.target.value)}
-              onBlur={commit}
-              onKeyDown={(e) => e.key === 'Enter' && commit()}
-              placeholder={isNumeric ? '0.00' : 'Enter value'}
-            />
-          </div>
+          <input
+            autoFocus
+            type={isNumeric ? 'number' : 'text'}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitEdit}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitEdit();
+              if (e.key === 'Escape') setEditing(false);
+            }}
+            className="w-36 bg-slate-900 border border-blue-500 text-white text-sm px-2 py-1 rounded outline-none"
+          />
         ) : (
           <button
-            onClick={() => { setLocalVal(value ?? ''); setEditing(true); }}
+            onClick={startEditing}
             className={`text-sm font-mono px-2 py-0.5 rounded transition-colors ${
               !hasValue
-                ? 'text-yellow-400 bg-yellow-900/20 border border-yellow-700/50'
+                ? 'text-yellow-400 bg-yellow-900/20 border border-yellow-700/50 hover:bg-yellow-900/40'
                 : 'text-green-300 bg-green-900/20 hover:bg-green-900/40'
             }`}
           >
@@ -140,23 +138,37 @@ function FieldEditor({ fieldKey, value, fieldDef, onChange }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// DocumentCard — one card per uploaded file
+// ---------------------------------------------------------------------------
+
 function DocumentCard({ doc, index, onFieldChange, onTypeChange, onRemove }) {
   const typeColors = {
-    T4: 'text-blue-400 bg-blue-900/20 border-blue-700/50',
-    RL1: 'text-red-400 bg-red-900/20 border-red-700/50',
-    RL31: 'text-green-400 bg-green-900/20 border-green-700/50',
+    T4:      'text-blue-400 bg-blue-900/20 border-blue-700/50',
+    RL1:     'text-red-400 bg-red-900/20 border-red-700/50',
+    RL31:    'text-green-400 bg-green-900/20 border-green-700/50',
     UNKNOWN: 'text-yellow-400 bg-yellow-900/20 border-yellow-700/50',
   };
 
   const fieldLabels = {
-    T4: T4_FIELD_LABELS,
-    RL1: RL1_FIELD_LABELS,
-    RL31: RL31_FIELD_LABELS,
+    T4:      T4_FIELD_LABELS,
+    RL1:     RL1_FIELD_LABELS,
+    RL31:    RL31_FIELD_LABELS,
     UNKNOWN: {},
   };
 
   const labels = fieldLabels[doc.docType] || {};
-  const fieldKeys = Object.keys(doc.fields || {});
+  const requiredKeys = REQUIRED_FIELDS[doc.docType] || [];
+
+  /**
+   * Which rows to render:
+   *   • extraction error → show all labels so user can fill everything in manually
+   *   • extraction OK    → only show extracted keys + always-required keys
+   */
+  const visibleEntries = Object.entries(labels).filter(([key]) => {
+    if (doc.extractionError) return true;
+    return key in (doc.fields || {}) || requiredKeys.includes(key);
+  });
 
   return (
     <div className="bg-slate-800/60 border border-slate-700 rounded-xl overflow-hidden">
@@ -169,29 +181,34 @@ function DocumentCard({ doc, index, onFieldChange, onTypeChange, onRemove }) {
           <div className="min-w-0">
             <p className="text-white text-sm font-medium truncate">{doc.name}</p>
             <p className="text-slate-500 text-xs">
-              {doc.confidence === 'low' ? '⚠️ OCR (low confidence)' : '✅ Extracted'}
+              {doc.extractionError ? '⚠️ Manual entry' : '✅ Extracted'}
             </p>
           </div>
         </div>
+
         <div className="flex items-center gap-2 shrink-0">
+          {/* Classification — always automatic; dropdown only shown on extraction failure */}
           {doc.docType === 'UNKNOWN' ? (
             <select
               value={doc.docType}
               onChange={(e) => onTypeChange(index, e.target.value)}
               className="bg-slate-700 border border-yellow-700/50 text-yellow-300 text-xs px-2 py-1 rounded"
             >
-              <option value="UNKNOWN">⚠️ Identify document</option>
+              <option value="UNKNOWN">Select type…</option>
               <option value="T4">T4</option>
               <option value="RL1">Relevé 1</option>
               <option value="RL31">Relevé 31</option>
             </select>
           ) : (
-            <span className={`text-xs font-medium px-2 py-1 rounded border ${typeColors[doc.docType]}`}>
-              {doc.docType === 'T4' && '✅ T4 detected'}
-              {doc.docType === 'RL1' && '✅ Relevé 1 detected'}
+            <span
+              className={`text-xs font-medium px-2 py-1 rounded border ${typeColors[doc.docType]}`}
+            >
+              {doc.docType === 'T4'   && '✅ T4 detected'}
+              {doc.docType === 'RL1'  && '✅ Relevé 1 detected'}
               {doc.docType === 'RL31' && '✅ Relevé 31 detected'}
             </span>
           )}
+
           <button
             onClick={() => onRemove(index)}
             className="text-slate-500 hover:text-red-400 text-sm ml-1 transition-colors"
@@ -202,16 +219,20 @@ function DocumentCard({ doc, index, onFieldChange, onTypeChange, onRemove }) {
         </div>
       </div>
 
-      {/* Fields */}
+      {/* Extraction error banner */}
+      {doc.extractionError && (
+        <div className="px-4 py-3 bg-red-900/20 border-b border-red-700/50 text-red-300 text-sm">
+          ⚠️ {doc.extractionError}
+        </div>
+      )}
+
+      {/* Field rows */}
       {doc.docType !== 'UNKNOWN' && (
         <div className="px-4 py-2">
-          {fieldKeys.length === 0 ? (
-            <p className="text-yellow-400 text-sm py-3">
-              ⚠️ No fields extracted automatically. Please enter values manually below.
-            </p>
-          ) : null}
-
-          {Object.entries(labels).map(([key, def]) => (
+          {visibleEntries.length === 0 && (
+            <p className="text-slate-400 text-sm py-3">No fields extracted.</p>
+          )}
+          {visibleEntries.map(([key, def]) => (
             <FieldEditor
               key={key}
               fieldKey={key}
@@ -226,6 +247,10 @@ function DocumentCard({ doc, index, onFieldChange, onTypeChange, onRemove }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// DocumentUpload — main step component
+// ---------------------------------------------------------------------------
+
 export default function DocumentUpload({ onComplete }) {
   const [docs, setDocs] = useState([]);
   const [processing, setProcessing] = useState(false);
@@ -233,44 +258,56 @@ export default function DocumentUpload({ onComplete }) {
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef(null);
 
-  const handleFiles = useCallback(async (files) => {
-    setProcessing(true);
-    const newDocs = [];
+  // API key: env var (silent) → localStorage fallback
+  const apiKey =
+    import.meta.env.VITE_ANTHROPIC_API_KEY ||
+    localStorage.getItem('anthropicApiKey') ||
+    '';
 
-    for (const file of files) {
-      if (!ACCEPTED_TYPES.includes(file.type)) {
-        alert(`"${file.name}" is not a supported format. Please upload PDF, JPEG, or PNG files.`);
-        continue;
-      }
-      setProcessingFile(file.name);
-      const result = await processFile(file);
-      if (!result.error) {
-        newDocs.push(result);
-      } else {
-        alert(`Error processing "${file.name}": ${result.error}`);
-      }
-    }
+  const handleFiles = useCallback(
+    async (files) => {
+      setProcessing(true);
+      const newDocs = [];
 
-    setDocs((prev) => {
-      const combined = [...prev];
-      for (const newDoc of newDocs) {
-        // Check for duplicates
-        const existingIdx = combined.findIndex((d) => d.docType === newDoc.docType && newDoc.docType !== 'UNKNOWN');
-        if (existingIdx >= 0 && newDoc.docType !== 'UNKNOWN') {
-          const replace = window.confirm(
-            `We already have a ${DOCUMENT_LABELS[newDoc.docType]}. Replace it?`
+      for (const file of files) {
+        if (!ACCEPTED_TYPES.includes(file.type)) {
+          alert(
+            `"${file.name}" is not a supported format. Please upload PDF, JPEG, or PNG files.`
           );
-          if (replace) combined[existingIdx] = newDoc;
+          continue;
+        }
+        setProcessingFile(file.name);
+        const result = await processFile(file, apiKey);
+        if (!result.error) {
+          newDocs.push(result);
         } else {
-          combined.push(newDoc);
+          alert(`Error processing "${file.name}": ${result.error}`);
         }
       }
-      return combined;
-    });
 
-    setProcessing(false);
-    setProcessingFile('');
-  }, []);
+      setDocs((prev) => {
+        const combined = [...prev];
+        for (const newDoc of newDocs) {
+          const existingIdx = combined.findIndex(
+            (d) => d.docType === newDoc.docType && newDoc.docType !== 'UNKNOWN'
+          );
+          if (existingIdx >= 0 && newDoc.docType !== 'UNKNOWN') {
+            const replace = window.confirm(
+              `We already have a ${DOCUMENT_LABELS[newDoc.docType] || newDoc.docType}. Replace it?`
+            );
+            if (replace) combined[existingIdx] = newDoc;
+          } else {
+            combined.push(newDoc);
+          }
+        }
+        return combined;
+      });
+
+      setProcessing(false);
+      setProcessingFile('');
+    },
+    [apiKey]
+  );
 
   const onDrop = useCallback(
     (e) => {
@@ -281,7 +318,10 @@ export default function DocumentUpload({ onComplete }) {
     [handleFiles]
   );
 
-  const onDragOver = (e) => { e.preventDefault(); setDragOver(true); };
+  const onDragOver = (e) => {
+    e.preventDefault();
+    setDragOver(true);
+  };
   const onDragLeave = () => setDragOver(false);
 
   const onFileInput = (e) => {
@@ -297,20 +337,10 @@ export default function DocumentUpload({ onComplete }) {
     );
   };
 
+  // Type can be corrected manually when extraction fails (docType === 'UNKNOWN')
   const onTypeChange = (docIdx, newType) => {
     setDocs((prev) =>
-      prev.map((d, i) =>
-        i === docIdx
-          ? {
-              ...d,
-              docType: newType,
-              fields: newType === 'T4'   ? parseT4(d.rows || [])
-                    : newType === 'RL1'  ? parseRl1(d.rows || [])
-                    : newType === 'RL31' ? parseRl31(d.rows || [])
-                    : {},
-            }
-          : d
-      )
+      prev.map((d, i) => (i === docIdx ? { ...d, docType: newType } : d))
     );
   };
 
@@ -318,20 +348,20 @@ export default function DocumentUpload({ onComplete }) {
     setDocs((prev) => prev.filter((_, i) => i !== docIdx));
   };
 
-  const t4Doc = docs.find((d) => d.docType === 'T4');
+  const t4Doc  = docs.find((d) => d.docType === 'T4');
   const rl1Doc = docs.find((d) => d.docType === 'RL1');
   const rl31Doc = docs.find((d) => d.docType === 'RL31');
 
-  const canContinue = t4Doc && rl1Doc;
-  const missingBox14 = t4Doc && !t4Doc.fields?.box14;
-  const missingBoxE = rl1Doc && !rl1Doc.fields?.boxE;
+  const canContinue  = t4Doc && rl1Doc;
+  const missingBox14 = t4Doc  && !t4Doc.fields?.box14;
+  const missingBoxE  = rl1Doc && !rl1Doc.fields?.boxE;
 
   const handleContinue = () => {
     if (!canContinue) return;
     onComplete({
-      t4: t4Doc?.fields || {},
-      rl1: rl1Doc?.fields || {},
-      rl31: rl31Doc?.fields || null,
+      t4:     t4Doc?.fields  || {},
+      rl1:    rl1Doc?.fields || {},
+      rl31:   rl31Doc?.fields || null,
       hasRl31: !!rl31Doc,
     });
   };
@@ -377,8 +407,10 @@ export default function DocumentUpload({ onComplete }) {
           {processing ? (
             <div className="flex flex-col items-center gap-3">
               <div className="w-8 h-8 border-4 border-red-500 border-t-transparent rounded-full animate-spin" />
-              <p className="text-slate-300 text-sm">Processing: <span className="text-white">{processingFile}</span></p>
-              <p className="text-slate-500 text-xs">This may take a moment for OCR processing…</p>
+              <p className="text-slate-300 text-sm">
+                Processing: <span className="text-white">{processingFile}</span>
+              </p>
+              <p className="text-slate-500 text-xs">Extracting with AI…</p>
             </div>
           ) : (
             <>
@@ -417,27 +449,33 @@ export default function DocumentUpload({ onComplete }) {
         {/* Validation messages */}
         {t4Doc && !rl1Doc && (
           <div className="bg-blue-900/20 border border-blue-700/50 rounded-xl p-4 mb-4 text-blue-300 text-sm">
-            ℹ️ T4 detected. Please also upload your <strong>Relevé 1</strong> (from Revenu Québec) to continue.
+            ℹ️ T4 detected. Please also upload your <strong>Relevé 1</strong> (from Revenu
+            Québec) to continue.
           </div>
         )}
         {missingBox14 && (
           <div className="bg-red-900/20 border border-red-700/50 rounded-xl p-4 mb-4 text-red-300 text-sm">
-            ⛔ <strong>T4 Box 14 (Employment Income)</strong> is required. Please enter this value above.
+            ⛔ <strong>T4 Box 14 (Employment Income)</strong> is required. Please enter this
+            value above.
           </div>
         )}
         {missingBoxE && (
           <div className="bg-red-900/20 border border-red-700/50 rounded-xl p-4 mb-4 text-red-300 text-sm">
-            ⛔ <strong>Relevé 1 Box E (Quebec income tax withheld)</strong> is required. Please enter this value above.
+            ⛔ <strong>Relevé 1 Box E (Quebec income tax withheld)</strong> is required. Please
+            enter this value above.
           </div>
         )}
 
-        {/* Discrepancy notice */}
+        {/* Income discrepancy notice */}
         {t4Doc && rl1Doc && t4Doc.fields?.box14 && rl1Doc.fields?.boxA &&
           Math.abs((t4Doc.fields.box14 || 0) - (rl1Doc.fields.boxA || 0)) > 100 && (
-          <div className="bg-slate-700/40 border border-slate-600 rounded-xl p-4 mb-4 text-slate-300 text-sm">
-            ℹ️ Your T4 income (${(t4Doc.fields.box14 || 0).toLocaleString('en-CA')}) differs from your Relevé 1 income (${(rl1Doc.fields.boxA || 0).toLocaleString('en-CA')}). Small differences are normal due to taxable benefits.
-          </div>
-        )}
+            <div className="bg-slate-700/40 border border-slate-600 rounded-xl p-4 mb-4 text-slate-300 text-sm">
+              ℹ️ Your T4 income ($
+              {(t4Doc.fields.box14 || 0).toLocaleString('en-CA')}) differs from your Relevé 1
+              income (${(rl1Doc.fields.boxA || 0).toLocaleString('en-CA')}). Small differences
+              are normal due to taxable benefits.
+            </div>
+          )}
 
         {/* Continue CTA */}
         <div className="flex justify-end">
