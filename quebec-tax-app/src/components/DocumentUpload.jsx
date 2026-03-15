@@ -4,74 +4,6 @@ import { processDocument, FIELD_DEFS } from '../utils/documentProcessor';
 const DOCUMENT_LABELS = { T4: 'T4', RL1: 'Relevé 1', RL31: 'Relevé 31' };
 
 // ---------------------------------------------------------------------------
-// API key helpers
-// VITE_ANTHROPIC_API_KEY works as a local-dev override, but Vite bakes it
-// into the JS bundle — never use it for a public deployment.
-// For production, users enter their key here and it lives only in
-// sessionStorage (cleared automatically when the tab is closed).
-// ---------------------------------------------------------------------------
-
-const SESSION_KEY = 'anthropicApiKey';
-
-function readApiKey() {
-  return import.meta.env.VITE_ANTHROPIC_API_KEY || sessionStorage.getItem(SESSION_KEY) || '';
-}
-
-function saveApiKey(key) {
-  if (key) sessionStorage.setItem(SESSION_KEY, key);
-  else sessionStorage.removeItem(SESSION_KEY);
-}
-
-// ---------------------------------------------------------------------------
-// ApiKeyBanner — shown when no key is present
-// ---------------------------------------------------------------------------
-
-function ApiKeyBanner({ onSave }) {
-  const [draft, setDraft] = useState('');
-  const [show,  setShow]  = useState(false);
-
-  const handleSave = () => {
-    const trimmed = draft.trim();
-    if (!trimmed) return;
-    saveApiKey(trimmed);
-    onSave(trimmed);
-  };
-
-  return (
-    <div className="bg-yellow-900/20 border border-yellow-700/50 rounded-xl p-4 mb-6 text-sm">
-      <p className="text-yellow-300 font-medium mb-2">
-        🔑 Enter your Anthropic API key to enable automatic extraction
-      </p>
-      <div className="flex gap-2">
-        <input
-          type={show ? 'text' : 'password'}
-          value={draft}
-          placeholder="sk-ant-api03-…"
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSave()}
-          className="flex-1 bg-slate-900 border border-slate-600 text-white text-sm px-3 py-1.5 rounded outline-none focus:border-yellow-500"
-        />
-        <button
-          onClick={() => setShow((s) => !s)}
-          className="text-slate-400 hover:text-slate-200 text-xs px-2 transition-colors"
-        >
-          {show ? 'hide' : 'show'}
-        </button>
-        <button
-          onClick={handleSave}
-          className="bg-yellow-600 hover:bg-yellow-500 text-white text-xs font-medium px-3 py-1.5 rounded transition-colors"
-        >
-          Save
-        </button>
-      </div>
-      <p className="text-slate-500 text-xs mt-2">
-        Stored only in this browser tab — cleared when you close the tab. Never sent to our servers.
-      </p>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Tooltip
 // ---------------------------------------------------------------------------
 
@@ -267,8 +199,9 @@ export default function DocumentUpload({ onComplete }) {
   const [processing,     setProcessing]     = useState(false);
   const [processingFile, setProcessingFile] = useState('');
   const [dragOver,       setDragOver]       = useState(false);
-  const [apiKey,         setApiKey]         = useState(readApiKey);
   const fileInputRef = useRef(null);
+
+  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY || '';
 
   const handleFiles = useCallback(
     async (files) => {
@@ -409,9 +342,6 @@ export default function DocumentUpload({ onComplete }) {
             <strong className="text-white">Relevé 31</strong> if you rent your home.
           </p>
         </div>
-
-        {/* API Key Banner */}
-        {!apiKey && <ApiKeyBanner onSave={setApiKey} />}
 
         {/* Drop Zone */}
         <div

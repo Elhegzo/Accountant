@@ -132,7 +132,7 @@ describe('processDocument', () => {
     extractWithClaude.mockRejectedValueOnce(err);
 
     const result = await processDocument(makeFile('t4.pdf'), '');
-    expect(result.extractionError).toMatch(/api key/i);
+    expect(result.extractionError).toMatch(/VITE_ANTHROPIC_API_KEY/i);
   });
 
   it('returns the auth-error message for a 401 response', async () => {
