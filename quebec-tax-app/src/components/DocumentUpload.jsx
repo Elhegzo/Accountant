@@ -201,28 +201,40 @@ export default function DocumentUpload({ onComplete }) {
   const [dragOver,       setDragOver]       = useState(false);
   const fileInputRef = useRef(null);
 
-  // API key: env var (build-time) → sessionStorage fallback (cleared on tab close)
-  const apiKey =
-    import.meta.env.VITE_ANTHROPIC_API_KEY ||
-    sessionStorage.getItem('anthropicApiKey') ||
-    '';
+  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY || '';
 
   const handleFiles = useCallback(
     async (files) => {
-      setProcessing(true);
-      const newDocs = [];
-
+      const supported = [];
       for (const file of files) {
         if (file.type !== 'application/pdf' && !file.type.startsWith('image/')) {
           alert(`"${file.name}" is not supported. Please upload a PDF or image file.`);
+        } else {
+          supported.push(file);
+        }
+      }
+      if (!supported.length) return;
+
+      setProcessing(true);
+      setProcessingFile(supported.map((f) => f.name).join(', '));
+
+      // Process all supported files concurrently.
+      const settled = await Promise.allSettled(
+        supported.map((file) => processDocument(file, apiKey))
+      );
+
+      const newDocs = [];
+      for (const outcome of settled) {
+        if (outcome.status === 'rejected') {
+          alert(`Unexpected error: ${outcome.reason}`);
           continue;
         }
-        setProcessingFile(file.name);
-        const result = await processDocument(file, apiKey);
-        if (!result.error) {
-          newDocs.push(result);
+        const result = outcome.value;
+        if (result.error) {
+          alert(`Error: ${result.error}`);
         } else {
-          alert(`Error processing "${file.name}": ${result.error}`);
+          // Attach a stable id so React can key the card without using array index.
+          newDocs.push({ ...result, id: crypto.randomUUID() });
         }
       }
 
@@ -381,7 +393,7 @@ export default function DocumentUpload({ onComplete }) {
           <div className="space-y-4 mb-8">
             {docs.map((doc, i) => (
               <DocumentCard
-                key={i}
+                key={doc.id || doc.name}
                 doc={doc}
                 index={i}
                 onRowChange={onRowChange}
