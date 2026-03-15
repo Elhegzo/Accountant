@@ -28,7 +28,7 @@ function FieldRow({ row, onChange }) {
 
   const displayValue = () => {
     if (!hasValue) return 'Enter value';
-    if (row.isNumeric) {
+    if (row.isCurrency) {
       return `$${Number(row.value).toLocaleString('en-CA', { minimumFractionDigits: 2 })}`;
     }
     return String(row.value);
@@ -287,6 +287,7 @@ export default function DocumentUpload({ onComplete }) {
       value:       undefined,
       tooltip:     def.description,
       isNumeric:   def.isNumeric !== false,
+      isCurrency:  def.isCurrency !== undefined ? def.isCurrency : def.isNumeric !== false,
     }));
     setDocs((prev) =>
       prev.map((d, i) =>
