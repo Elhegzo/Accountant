@@ -48,13 +48,25 @@ function buildDocumentState(file, docType, rawFields) {
     const parsed      = isNumeric ? parseFloat(row.value) : row.value;
     const value       = isNumeric && !isNaN(parsed) ? parsed : row.value;
 
+    // isCurrency controls whether the value is displayed with a $ prefix.
+    // Defined fields: use explicit isCurrency if set, otherwise inherit from isNumeric.
+    // Unknown fields: only treat as currency if the raw value contains a decimal point
+    // (e.g. "41870.06" → currency; "2025", "3", "1110" → plain number/code).
+    let isCurrency;
+    if (def) {
+      isCurrency = def.isCurrency !== undefined ? def.isCurrency : def.isNumeric !== false;
+    } else {
+      isCurrency = isNumeric && typeof row.value === 'string' && row.value.includes('.');
+    }
+
     return {
       key,
       box:         row.box,
       description,
       value,
-      tooltip:   def?.description ?? null,
+      tooltip:     def?.description ?? null,
       isNumeric,
+      isCurrency,
     };
   });
 
