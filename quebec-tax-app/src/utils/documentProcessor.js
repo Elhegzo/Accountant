@@ -83,7 +83,7 @@ function buildDocumentState(file, docType, rawFields) {
  */
 function describeError(err) {
   if (err.message === 'ANTHROPIC_API_KEY_MISSING') {
-    return 'Anthropic API key not configured. Set VITE_ANTHROPIC_API_KEY in your .env file and restart the dev server.';
+    return 'No API key set. Enter your Anthropic API key above to enable automatic extraction.';
   }
   if (err.name === 'AbortError' || (err.message ?? '').includes('timed out')) {
     return 'Extraction timed out after 30 s. Please try again or enter your values manually.';
@@ -93,7 +93,7 @@ function describeError(err) {
     err.status === 403 ||
     (err.message ?? '').toLowerCase().includes('auth');
   if (isAuthError) {
-    return 'API key rejected (401/403). Double-check the key in your .env file and restart the dev server.';
+    return 'API key rejected (401/403). Please check the key you entered and try again.';
   }
   return "We couldn't read this file. Please enter your values manually.";
 }

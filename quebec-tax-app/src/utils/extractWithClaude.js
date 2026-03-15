@@ -60,25 +60,32 @@ const DOCUMENT_TYPE_MAP = {
  * @param {File} file
  * @returns {Promise<string[]>} Base64-encoded PNG strings, one per page
  */
+async function renderPage(pdf, pageNum) {
+  const page     = await pdf.getPage(pageNum);
+  const viewport = page.getViewport({ scale: 2.0 }); // 2× for crisp text
+
+  const canvas  = document.createElement('canvas');
+  canvas.width  = viewport.width;
+  canvas.height = viewport.height;
+
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+
+  const base64 = canvas.toDataURL('image/png').split(',')[1];
+
+  // Release backing store immediately — large canvases hold significant memory.
+  canvas.width = canvas.height = 0;
+
+  return base64;
+}
+
 async function pdfToImages(file) {
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pdf         = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-  const images = [];
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 2.0 }); // 2× for crisp text
-
-    const canvas = document.createElement('canvas');
-    canvas.width  = viewport.width;
-    canvas.height = viewport.height;
-
-    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-
-    images.push(canvas.toDataURL('image/png').split(',')[1]);
-  }
-
-  return images;
+  // Render all pages concurrently instead of sequentially.
+  return Promise.all(
+    Array.from({ length: pdf.numPages }, (_, i) => renderPage(pdf, i + 1))
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +199,7 @@ export async function extractWithClaude(file, apiKey) {
   );
 
   const rawText = response.content.find((b) => b.type === 'text')?.text ?? '';
-  console.log('[extractWithClaude] raw response:', rawText);
+  if (import.meta.env.DEV) console.log('[extractWithClaude] raw response:', rawText);
 
   return parseClaudeResponse(rawText);
 }
