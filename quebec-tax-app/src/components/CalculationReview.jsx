@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import { calculateFederal, calculateQuebec, formatCurrency } from '../utils/taxCalculator';
 
 function Tooltip({ text }) {
@@ -71,10 +71,8 @@ function EditableLine({ label, value, onChange, tooltip, indent = false, bold = 
   );
 }
 
-function TaxColumn({ title, jurisdiction, calc, onOverride, overrides }) {
+function TaxColumn({ title, jurisdiction, calc, onOverride }) {
   const isFederal = jurisdiction === 'federal';
-
-  const getVal = (key, defaultVal) => overrides?.[key] ?? defaultVal;
 
   return (
     <div className="bg-slate-800/60 border border-slate-700 rounded-2xl p-5 font-mono text-sm">
@@ -90,21 +88,30 @@ function TaxColumn({ title, jurisdiction, calc, onOverride, overrides }) {
       {isFederal ? (
         <>
           <EditableLine
-            label="Employment Income"
+            label="Employment Income (line 15000)"
             value={calc.employmentIncome}
             tooltip="T4 Box 14 — your total employment income before deductions"
             onChange={(v) => onOverride('box14', v)}
           />
+          {calc.enhancedQppDeduction > 0 && (
+            <EditableLine
+              label="− Enhanced QPP Deduction (line 22215)"
+              value={-calc.enhancedQppDeduction}
+              indent
+              tooltip="Enhanced QPP2 contributions are deducted from income, not claimed as a credit"
+            />
+          )}
           {calc.rrspDeduction > 0 && (
             <EditableLine
               label="− RRSP Deduction"
               value={-calc.rrspDeduction}
+              indent
               tooltip="Your RRSP contributions reduce your taxable income dollar-for-dollar"
             />
           )}
           <EditableLine separator bold />
           <EditableLine
-            label="= Taxable Income"
+            label="= Net / Taxable Income (line 26000)"
             value={calc.taxableIncome}
             bold
             tooltip="The income amount on which federal tax is calculated"
@@ -117,42 +124,42 @@ function TaxColumn({ title, jurisdiction, calc, onOverride, overrides }) {
           />
           <EditableLine
             label="− Basic Personal Credit"
-            value={-calc.basicPersonalCredit}
+            value={-calc.bpaAmount * calc.creditRate}
             indent
-            tooltip={`Every Canadian gets a non-refundable credit of $16,129 × 15% = $${Math.round(calc.basicPersonalCredit).toLocaleString('en-CA')}`}
+            tooltip={`Every Canadian gets a non-refundable credit of $${calc.bpaAmount.toLocaleString('en-CA')} × 14.5%`}
           />
           <EditableLine
-            label="− QPP Credit (Quebec Pension Plan)"
-            value={-calc.qppCredit}
+            label="− QPP Credit (base only, line 30800)"
+            value={-calc.baseQppAmount * calc.creditRate}
             indent
-            tooltip="Your QPP contributions qualify for a 15% federal non-refundable credit"
+            tooltip="Only the BASE QPP contribution qualifies for a 14.5% federal non-refundable credit"
           />
           <EditableLine
-            label="− EI Premiums Credit"
-            value={-calc.eiCredit}
+            label="− EI Premiums Credit (line 31200)"
+            value={-calc.eiAmount * calc.creditRate}
             indent
-            tooltip="Your Employment Insurance premiums qualify for a 15% federal credit"
+            tooltip="Your Employment Insurance premiums qualify for a 14.5% federal credit"
           />
           <EditableLine
-            label="− Canada Employment Credit"
-            value={-calc.employmentCredit}
+            label="− Canada Employment Credit (line 31260)"
+            value={-calc.employmentAmount * calc.creditRate}
             indent
-            tooltip={`A flat $1,433 employment credit at 15% — available to all employed Canadians`}
+            tooltip={`A flat $${calc.employmentAmount.toLocaleString('en-CA')} employment credit at 14.5%`}
           />
-          {calc.ppipCredit > 0 && (
+          {calc.ppipAmount > 0 && (
             <EditableLine
-              label="− PPIP Credit"
-              value={-calc.ppipCredit}
+              label="− PPIP Credit (line 31210)"
+              value={-calc.ppipAmount * calc.creditRate}
               indent
-              tooltip="Provincial Parental Insurance Plan premiums — 15% federal credit"
+              tooltip="Provincial Parental Insurance Plan premiums — 14.5% federal credit"
             />
           )}
-          {calc.unionDuesCredit > 0 && (
+          {calc.medicalExpenses > 0 && (
             <EditableLine
-              label="− Union Dues Credit"
-              value={-calc.unionDuesCredit}
+              label="Medical Expenses (line 33099)"
+              value={calc.medicalExpenses}
               indent
-              tooltip="Union membership fees are fully deductible — 15% credit applied"
+              tooltip={`T4 Box 85 employee health premiums. Net credit after threshold: ${formatCurrency(calc.medicalCreditAmount)}`}
             />
           )}
           {calc.donationsCredit > 0 && (
@@ -160,28 +167,35 @@ function TaxColumn({ title, jurisdiction, calc, onOverride, overrides }) {
               label="− Charitable Donations Credit"
               value={-calc.donationsCredit}
               indent
-              tooltip="First $200 of donations: 15% credit. Amounts above $200: 29% credit"
+              tooltip="First $200 of donations: 14.5% credit. Amounts above $200: 29% credit"
             />
           )}
-          {calc.medicalCredit > 0 && (
+          {calc.topUpCredit > 0 && (
             <EditableLine
-              label="− Medical Expenses Credit"
-              value={-calc.medicalCredit}
+              label="− Top-Up Tax Credit (line 34990)"
+              value={-calc.topUpCredit}
               indent
-              tooltip="15% credit on eligible medical expenses above the $2,759 threshold"
+              tooltip="Temporary credit compensating for the 15% → 14.5% rate change on credits above the first bracket"
             />
           )}
           <EditableLine separator />
           <EditableLine
-            label="Tax After Credits"
+            label="= Total Credits (line 33800)"
+            value={calc.totalCredits}
+            bold
+            tooltip="Non-refundable credits at 14.5% + donations + top-up"
+          />
+          <EditableLine separator />
+          <EditableLine
+            label="Federal Tax (line 40600)"
             value={calc.taxAfterCredits}
             bold
             tooltip="Federal tax remaining after applying all non-refundable credits"
           />
           <EditableLine
-            label="− Quebec Abatement (16.5%)"
+            label="− Quebec Abatement 16.5% (line 44000)"
             value={-calc.quebecAbatement}
-            tooltip="Quebec residents receive a 16.5% reduction on federal tax because Quebec funds its own social programs — education, healthcare, and social services — independently from the federal government."
+            tooltip="Quebec residents receive a 16.5% reduction because Quebec funds its own social programs independently."
           />
           <EditableLine separator bold />
           <EditableLine
@@ -199,7 +213,7 @@ function TaxColumn({ title, jurisdiction, calc, onOverride, overrides }) {
           <div className={`border-t-2 mt-2 pt-2 ${calc.refundOrOwing >= 0 ? 'border-green-500' : 'border-red-500'}`}>
             <div className="flex items-center justify-between py-1">
               <span className={`font-extrabold text-base ${calc.refundOrOwing >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {calc.refundOrOwing >= 0 ? '✅ REFUND' : '⚠️ BALANCE OWING'}
+                {calc.refundOrOwing >= 0 ? 'REFUND (line 48400)' : 'BALANCE OWING'}
               </span>
               <span className={`font-extrabold text-xl font-mono ${calc.refundOrOwing >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                 {formatCurrency(Math.abs(calc.refundOrOwing))}
@@ -210,30 +224,26 @@ function TaxColumn({ title, jurisdiction, calc, onOverride, overrides }) {
       ) : (
         <>
           <EditableLine
-            label="Employment Income"
+            label="Employment Income (line 101)"
             value={calc.employmentIncome}
             tooltip="Relevé 1 Box A — your total Quebec employment income"
             onChange={(v) => onOverride('boxA', v)}
           />
           <EditableLine separator />
           <EditableLine
-            label="− QPP Contributions"
-            value={-calc.qppContributions}
-            indent
-            tooltip="Quebec Pension Plan contributions (Relevé 1 Box B.A) — deductible from Quebec income"
-          />
-          <EditableLine
-            label="− QPIP Premiums"
-            value={-calc.qpipPremiums}
-            indent
-            tooltip="Quebec Parental Insurance Plan premiums (Box H) — deductible from Quebec income"
-          />
-          <EditableLine
-            label="− Quebec Employment Deduction"
+            label="− Workers Deduction (line 201)"
             value={-calc.employmentDeduction}
             indent
-            tooltip="A flat $1,368 employment deduction for all Quebec employees — no receipt needed"
+            tooltip={`A flat $${calc.employmentDeduction.toLocaleString('en-CA')} employment deduction for all Quebec employees`}
           />
+          {calc.enhancedQppDeduction > 0 && (
+            <EditableLine
+              label="− Enhanced QPP Deduction (line 248)"
+              value={-calc.enhancedQppDeduction}
+              indent
+              tooltip="Enhanced QPP2 contributions deducted from Quebec income"
+            />
+          )}
           {calc.rrspDeduction > 0 && (
             <EditableLine
               label="− RRSP Deduction"
@@ -252,68 +262,71 @@ function TaxColumn({ title, jurisdiction, calc, onOverride, overrides }) {
           )}
           <EditableLine separator bold />
           <EditableLine
-            label="= Net Quebec Income"
+            label="= Net Quebec Income (line 275)"
             value={calc.netIncome}
             bold
             tooltip="The income amount on which Quebec provincial tax is calculated"
           />
           <EditableLine separator />
           <EditableLine
-            label="Gross Quebec Tax"
+            label="Tax on Taxable Income (line 401)"
             value={calc.grossTax}
             tooltip="Tax calculated by applying Quebec progressive brackets (14%–25.75%) to net income"
           />
           <EditableLine
-            label="− Basic Personal Credit"
-            value={-calc.basicPersonalCredit}
+            label="− Basic Personal Credit (line 350)"
+            value={-calc.bpaCredit}
             indent
-            tooltip={`Quebec basic personal amount: $17,183 × 14% = $${Math.round(calc.basicPersonalCredit).toLocaleString('en-CA')}`}
+            tooltip={`Quebec basic personal amount: $${calc.bpaAmount.toLocaleString('en-CA')} × 14% = ${formatCurrency(calc.bpaCredit)}`}
           />
-          <EditableLine
-            label="− QPP Credit"
-            value={-calc.qppCredit}
-            indent
-            tooltip="Your QPP contributions qualify for a 14% Quebec non-refundable credit"
-          />
-          <EditableLine
-            label="− QPIP Credit"
-            value={-calc.qpipCredit}
-            indent
-            tooltip="QPIP premiums qualify for a 14% Quebec credit"
-          />
-          {calc.privateHealthCredit > 0 && (
+          {calc.medicalCredit > 0 && (
             <EditableLine
-              label="− Private Health Insurance Credit"
-              value={-calc.privateHealthCredit}
+              label="− Medical Expenses Credit (line 389)"
+              value={-calc.medicalCredit}
               indent
-              tooltip="Employee-paid private health insurance premiums (Box J / 235) — 14% Quebec credit"
+              tooltip={`${formatCurrency(calc.medicalEligible)} eligible medical expenses × 20% = ${formatCurrency(calc.medicalCredit)}`}
             />
           )}
-          {calc.unionDuesCredit > 0 && (
-            <EditableLine
-              label="− Union Dues Credit"
-              value={-calc.unionDuesCredit}
-              indent
-              tooltip="Union dues qualify for a 14% Quebec non-refundable credit"
-            />
-          )}
+          <EditableLine separator />
+          <EditableLine
+            label="= Non-Refundable Credits (line 399)"
+            value={calc.totalNonRefundableCredits}
+            bold
+            tooltip="Total Quebec non-refundable credits"
+          />
           <EditableLine separator bold />
           <EditableLine
-            label="= Net Quebec Tax"
-            value={calc.netQuebecTax}
+            label="= Tax Payable (line 450)"
+            value={calc.taxPayable}
             bold
-            tooltip="Your actual Quebec provincial tax liability after all non-refundable credits"
+            tooltip="Your Quebec tax liability after all non-refundable credits"
           />
           <EditableLine separator />
           <EditableLine
-            label="Tax Already Withheld (Box E)"
+            label="Tax Withheld (line 451)"
             value={-calc.taxAlreadyPaid}
-            tooltip="Quebec income tax your employer already remitted to Revenu Québec on your behalf"
+            tooltip="Quebec income tax your employer already remitted to Revenu Québec"
           />
+          {calc.qppOverpayment > 0 && (
+            <EditableLine
+              label="QPP Overpayment (line 452)"
+              value={-calc.qppOverpayment}
+              indent
+              tooltip="You overpaid QPP contributions — the excess is refunded"
+            />
+          )}
+          {calc.workPremium > 0 && (
+            <EditableLine
+              label="Work Premium (line 456)"
+              value={-calc.workPremium}
+              indent
+              tooltip="Quebec refundable tax credit for low-to-moderate income workers (Schedule P)"
+            />
+          )}
           <div className={`border-t-2 mt-2 pt-2 ${calc.refundOrOwing >= 0 ? 'border-green-500' : 'border-red-500'}`}>
             <div className="flex items-center justify-between py-1">
               <span className={`font-extrabold text-base ${calc.refundOrOwing >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                {calc.refundOrOwing >= 0 ? '✅ REFUND' : '⚠️ BALANCE OWING'}
+                {calc.refundOrOwing >= 0 ? 'REFUND (line 478)' : 'BALANCE OWING'}
               </span>
               <span className={`font-extrabold text-xl font-mono ${calc.refundOrOwing >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                 {formatCurrency(Math.abs(calc.refundOrOwing))}
@@ -400,14 +413,12 @@ export default function CalculationReview({ documents, credits, onComplete }) {
             jurisdiction="federal"
             calc={federalCalc}
             onOverride={onT4Override}
-            overrides={overrides.t4}
           />
           <TaxColumn
             title="Quebec Return (TP-1)"
             jurisdiction="quebec"
             calc={quebecCalc}
             onOverride={onRl1Override}
-            overrides={overrides.rl1}
           />
         </div>
 
@@ -430,7 +441,7 @@ export default function CalculationReview({ documents, credits, onComplete }) {
         {/* Balance owing note */}
         {(federalCalc.refundOrOwing < 0 || quebecCalc.refundOrOwing < 0) && (
           <div className="bg-red-900/20 border border-red-700/40 rounded-xl p-4 mb-6">
-            <p className="text-red-300 font-semibold text-sm mb-1">⚠️ Balance Owing</p>
+            <p className="text-red-300 font-semibold text-sm mb-1">Balance Owing</p>
             <p className="text-slate-400 text-xs">
               {federalCalc.refundOrOwing < 0 && (
                 <>Federal: You owe {formatCurrency(Math.abs(federalCalc.refundOrOwing))} — pay at{' '}
@@ -447,7 +458,7 @@ export default function CalculationReview({ documents, credits, onComplete }) {
         {/* Disclaimer */}
         <div className="bg-amber-950/40 border border-amber-700/50 rounded-xl p-5 mb-6">
           <p className="text-amber-300 font-semibold text-sm mb-2">
-            ⚠️ Important Disclaimer
+            Important Disclaimer
           </p>
           <p className="text-amber-200/70 text-sm leading-relaxed mb-4">
             These calculations are estimates based on standard 2025 tax rates. You are responsible for
