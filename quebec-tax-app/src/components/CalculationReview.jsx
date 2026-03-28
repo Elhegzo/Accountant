@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import { calculateFederal, calculateQuebec, formatCurrency } from '../utils/taxCalculator';
 
 function Tooltip({ text }) {
@@ -71,7 +71,7 @@ function EditableLine({ label, value, onChange, tooltip, indent = false, bold = 
   );
 }
 
-function TaxColumn({ title, jurisdiction, calc, onOverride, overrides }) {
+function TaxColumn({ title, jurisdiction, calc, onOverride }) {
   const isFederal = jurisdiction === 'federal';
 
   return (
@@ -172,7 +172,7 @@ function TaxColumn({ title, jurisdiction, calc, onOverride, overrides }) {
           )}
           {calc.topUpCredit > 0 && (
             <EditableLine
-              label="+ Top-Up Tax Credit (line 34990)"
+              label="− Top-Up Tax Credit (line 34990)"
               value={-calc.topUpCredit}
               indent
               tooltip="Temporary credit compensating for the 15% → 14.5% rate change on credits above the first bracket"
@@ -413,14 +413,12 @@ export default function CalculationReview({ documents, credits, onComplete }) {
             jurisdiction="federal"
             calc={federalCalc}
             onOverride={onT4Override}
-            overrides={overrides.t4}
           />
           <TaxColumn
             title="Quebec Return (TP-1)"
             jurisdiction="quebec"
             calc={quebecCalc}
             onOverride={onRl1Override}
-            overrides={overrides.rl1}
           />
         </div>
 

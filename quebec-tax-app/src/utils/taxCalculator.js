@@ -48,7 +48,6 @@ export function calculateFederal(t4, rl1, credits = {}) {
   const pensionableEarnings = t4.box26 || employmentIncome;
   const ppipPremiums = t4.box55 || 0;
   const medicalExpenses = t4.box85 || 0;
-  const unionDues = t4.box44 || 0;
   const charitableDonations = (t4.box46 || 0) + (credits.donations || 0);
   const rrspDeduction = credits.rrsp || 0;
 
@@ -154,7 +153,6 @@ export function calculateQuebec(t4, rl1, credits = {}) {
   const employmentIncome = rl1.boxA || 0;
   const qppPaid = (rl1.boxBA || 0) + (rl1.boxBB || 0);
   const pensionableEarnings = rl1.boxG || rl1.boxA || 0;
-  const qpipPremiums = rl1.boxH || 0;
   const taxAlreadyPaid = rl1.boxE || 0;
   // Use boxJ only (box235 is supplementary info for the same amount)
   const medicalExpenses = rl1.boxJ || 0;
